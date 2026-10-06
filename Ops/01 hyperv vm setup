@@ -1,0 +1,195 @@
+# 01 - Hyper-V VM Setup (AlmaLinux 10)
+
+> **Series:** 1 of 4 | Next: [02 - LAMP Stack & WordPress](02-lamp-wordpress-installation.md)
+
+## Overview
+
+This guide builds the foundation for the whole project: an **AlmaLinux 10 virtual machine** on **Windows Hyper-V** with:
+
+- A **stable internal IP** (`10.10.10.101`) so the VM is always reachable at the same address from the Windows host.
+- A **second network adapter** for internet access (package installs, updates).
+- **SSH access** from the host using MobaXterm.
+
+### Why two network adapters?
+
+Hyper-V's `Default Switch` hands out a changing IP (DHCP) on every reboot, which is unreliable for hosting a website or SSH. An `Internal` switch lets us pick a fixed IP, but it has no internet. Using both gives us the best of each:
+
+| Adapter | Switch | Purpose | IP |
+|---|---|---|---|
+| `eth0` | `vSwitch-Internal` | Stable management/web address | `10.10.10.101` (static) |
+| `eth1` | `Default Switch` | Internet access | `172.x.x.x` (DHCP) |
+
+## Prerequisites
+
+- Windows 10/11 Pro/Enterprise with Hyper-V enabled
+- AlmaLinux 10 ISO
+- Minimum 2 GB RAM (4 GB recommended), 20 GB disk
+
+---
+
+## Step 1 - Create the VM
+
+1. Open **Hyper-V Manager → New → Virtual Machine**.
+2. Name the VM and choose **Generation 2** (UEFI, better performance).
+3. Assign memory: 2 GB minimum, **4 GB recommended**.
+4. Create a virtual hard disk (**20 GB minimum**).
+5. Attach the AlmaLinux 10 ISO.
+6. Install using the **Minimal Install** profile and set a **root password**.
+
+> **Note:** Generation 2 VMs use Secure Boot. If the VM fails to boot the ISO, open VM Settings → Security and set the Secure Boot template to *Microsoft UEFI Certificate Authority*.
+
+**Why minimal install?** Fewer packages mean a smaller attack surface and less to patch. We add only what we need later.
+
+## Step 2 - Create an Internal Virtual Switch
+
+1. Hyper-V Manager → **Virtual Switch Manager → New virtual network switch**.
+2. Select **Internal** → **Create Virtual Switch**.
+3. Name it `vSwitch-Internal` → **Apply → OK**.
+
+An *Internal* switch connects only the VM and the Windows host. It is not exposed to your physical LAN or the internet.
+
+## Step 3 - Configure the Windows Host Adapter
+
+Windows creates a virtual adapter for the switch. Give it a static IP so it sits on the same subnet as the VM.
+
+1. Control Panel → Network and Sharing Center → **Change adapter settings**.
+2. Right-click `vEthernet (vSwitch-Internal)` → **Properties**.
+3. Select **Internet Protocol Version 4 (TCP/IPv4)** → Properties.
+4. Set:
+
+| Field | Value |
+|---|---|
+| IP address | `10.10.10.1` |
+| Subnet mask | `255.255.255.0` |
+| Default gateway | *(leave blank)* |
+
+**Why leave the gateway blank?** Windows already has a default route to the internet. Adding another gateway here could break the host's own connectivity.
+
+## Step 4 - Attach the VM to the Internal Switch
+
+1. Right-click the VM → **Settings**.
+2. **Network Adapter** → Virtual switch = `vSwitch-Internal` → **OK**.
+
+## Step 5 - Add a Second Adapter for Internet
+
+1. VM → Settings → **Add Hardware → Network Adapter**.
+2. Virtual switch = `Default Switch` → **OK**.
+
+**Result:** the VM has two NICs, one for a stable internal address and one for internet.
+
+---
+
+## Step 6 - Boot the VM and Set a Static IP
+
+Log into the VM console as `root`. We use **NetworkManager (`nmcli`)**, the default network tool on AlmaLinux.
+
+```bash
+nmcli connection modify eth0 ipv4.method manual
+nmcli connection modify eth0 ipv4.addresses 10.10.10.101/24
+nmcli connection modify eth0 ipv4.gateway 10.10.10.1
+nmcli connection modify eth0 ipv4.dns "8.8.8.8 1.1.1.1"
+nmcli connection down eth0 && nmcli connection up eth0
+```
+
+| Command | What it does |
+|---|---|
+| `ipv4.method manual` | Disables DHCP on this interface |
+| `ipv4.addresses` | Sets the fixed IP and subnet (`/24` = `255.255.255.0`) |
+| `ipv4.gateway` | Sets the default gateway (the Windows host) |
+| `ipv4.dns` | Sets Google and Cloudflare DNS resolvers |
+| `down && up` | Restarts the connection to apply changes |
+
+**Verify:**
+```bash
+ip a show eth0
+```
+Expected: `inet 10.10.10.101/24`
+
+> **Tip:** Connection names may differ on your system. Run `nmcli connection show` to see the exact names.
+
+## Step 7 - Bring Up the Second Adapter
+
+```bash
+nmcli connection show
+nmcli connection up "Wired connection 1"
+```
+
+**Verify:**
+```bash
+ip a show eth1
+```
+Expected: a `172.x.x.x` address from the Default Switch's DHCP.
+
+## Step 8 - Fix Route Priority
+
+**The problem:** both NICs may claim to be the default route. `eth0` has no internet, so if it wins, all outbound traffic fails.
+
+**The fix:** forbid `eth0` from being a default route, and give `eth1` a low metric (lower = higher priority).
+
+```bash
+nmcli connection modify eth0 ipv4.never-default yes
+nmcli connection modify "Wired connection 1" ipv4.route-metric 50
+nmcli connection down eth0 && nmcli connection up eth0
+nmcli connection up "Wired connection 1"
+```
+
+**Verify:**
+```bash
+ip route
+```
+Expected: a **single** `default via ... dev eth1` route.
+
+## Step 9 - Test Internet
+
+```bash
+ping -c 4 8.8.8.8
+```
+Four replies means routing is correct. Also test DNS: `ping -c 2 google.com`.
+
+---
+
+## Step 10 - Enable SSH Root Login
+
+AlmaLinux ships with `PermitRootLogin prohibit-password` (set in `/etc/ssh/sshd_config.d/50-redhat.conf`), which blocks password-based root SSH. We override it with a drop-in file.
+
+```bash
+echo -e "PermitRootLogin yes\nPasswordAuthentication yes" > /etc/ssh/sshd_config.d/99-custom.conf
+systemctl restart sshd
+sshd -T | grep -E "permitrootlogin|passwordauthentication"
+```
+
+Both values should return `yes`.
+
+**Why a drop-in file?** Files in `sshd_config.d/` are read in alphabetical order, and the first value wins for most options in OpenSSH. Check with `sshd -T` to confirm the effective result rather than assuming.
+
+> **Security warning:** Root login with a password is convenient for a lab but **not recommended for production**. See [04 - Security Hardening](04-security-hardening.md) for the secure replacement.
+
+## Step 11 - Connect via MobaXterm
+
+1. **Session → SSH**
+2. Remote host: `10.10.10.101`
+3. Port: `22`
+4. Username: `root`
+5. Save and connect.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Can't ping `10.10.10.101` from Windows | Wrong host IP or wrong switch | Re-check Steps 3 and 4 |
+| VM has no internet | `eth0` is the default route | Re-run Step 8, check `ip route` |
+| SSH "permission denied" for root | Override not applied | Run `sshd -T` and verify Step 10 |
+| `eth1` has no IP | Connection not up | `nmcli connection up "Wired connection 1"` |
+
+## Checklist
+
+- [ ] VM boots and installs successfully
+- [ ] `eth0` = `10.10.10.101`
+- [ ] `eth1` has a `172.x.x.x` address
+- [ ] `ip route` shows one default route via `eth1`
+- [ ] `ping 8.8.8.8` works
+- [ ] SSH works from MobaXterm
+
+**Next:** [02 - LAMP Stack & WordPress](02-lamp-wordpress-installation.md)
