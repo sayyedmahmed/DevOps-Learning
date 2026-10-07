@@ -27,7 +27,7 @@ Hyper-V's `Default Switch` hands out a changing IP (DHCP) on every reboot, which
 - **Disk:** 20 GB minimum
 - **CPU:** 1 vCPU minimum, 2 vCPU recommended
 
-> ⚠️ **Do not go below 2 GB RAM or 20 GB disk.** AlmaLinux 10's installer alone needs ~1.5–2 GB, and the LAMP stack in Part 2 will not fit on 10 GB. 1 GB / 10 GB will fail partway through the install.
+> **Warning:** Do not go below 2 GB RAM or 20 GB disk. AlmaLinux 10's installer alone needs ~1.5–2 GB, and the LAMP stack in Part 2 will not fit on 10 GB. 1 GB / 10 GB will fail partway through the install.
 
 ---
 
@@ -45,7 +45,7 @@ Hyper-V's `Default Switch` hands out a changing IP (DHCP) on every reboot, which
 6. **Attach the AlmaLinux 10 ISO** → Finish.
 7. **Before starting the VM, fix Secure Boot** — see Step 1a.
 
-### ⚠️ 1a. Fix Secure Boot BEFORE first boot (do not skip)
+### 1a. Fix Secure Boot BEFORE first boot (do not skip)
 
 **Generation 2 VMs have Secure Boot enabled by default.** AlmaLinux's bootloader is **not signed with a Microsoft-trusted certificate**, so the VM refuses to boot the ISO and shows:
 
@@ -61,7 +61,7 @@ No operating system was loaded.
 
 You have **two fixes**. Pick one:
 
-#### Option A — Switch the Secure Boot template (keeps Secure Boot on) ✅ recommended
+#### Option A — Switch the Secure Boot template (keeps Secure Boot on) - recommended
 
 1. Right-click the VM → **Settings**.
 2. Left pane → **Security**.
