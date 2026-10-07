@@ -1,4 +1,4 @@
-# 01 - Hyper-V VM Setup (AlmaLinux 10) - Beginner Edition
+# 01 - Hyper-V VM Setup (AlmaLinux 10)
 
 > Next: [02 - LAMP Stack & WordPress](02-lamp-wordpress-installation.md)
 
