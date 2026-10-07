@@ -59,14 +59,14 @@ dnf install httpd mariadb-server php php-mysqlnd php-gd -y
 Start Apache and MariaDB now, and make them start automatically after reboot.
 
 ```bash
-systemctl enable --now httpd
-systemctl enable --now mariadb
+systemctl enable httpd
+systemctl enable mariadb
 ```
 
 Verify both services are running:
 
 ```bash
-systemctl status httpd mariadb --no-pager
+systemctl status httpd mariadb
 ```
 
 You should see `active (running)` for both services.
