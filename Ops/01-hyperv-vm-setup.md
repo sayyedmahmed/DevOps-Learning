@@ -1,114 +1,62 @@
-
-# 01 - Hyper-V VM Setup (AlmaLinux 10)
+# 01 - Hyper-V VM Setup (AlmaLinux 10) - Beginner Edition
 
 > **Series:** 1 of 4 | Next: [02 - LAMP Stack & WordPress](02-lamp-wordpress-installation.md)
 
 ## Overview
 
-This guide builds the foundation for the whole project: an **AlmaLinux 10 virtual machine** on **Windows Hyper-V** with:
+By the end of this guide you will have an **AlmaLinux 10 virtual machine** on **Windows Hyper-V** that:
 
-- A **stable internal IP** (`10.10.10.101`) so the VM is always reachable at the same address from the Windows host.
-- A **second network adapter** for internet access (package installs, updates).
-- **SSH access** from the host using MobaXterm.
+- Always has the same address (`10.10.10.101`), so you can connect by SSH.
+- Can reach the internet (to install software and updates).
+- Accepts SSH logins from MobaXterm on your Windows PC.
 
-### Why two network adapters?
+### The two network adapters (NICs)
 
-Hyper-V's `Default Switch` hands out a changing IP (DHCP) on every reboot, which is unreliable for hosting a website or SSH. An `Internal` switch lets us pick a fixed IP, but it has no internet. Using both gives us the best of each:
-
-| Adapter | Switch | Purpose | IP |
+| Name in this guide | Hyper-V switch | Job | IP address |
 |---|---|---|---|
-| `eth0` | `vSwitch-Internal` | Stable management/web address | `10.10.10.101` (static) |
-| `eth1` | `Default Switch` | Internet access | `172.x.x.x` (DHCP) |
+| `eth0` | `Default Switch` | **Internet** access | `172.x.x.x` (automatic) |
+| `eth1` | `vSwitch-Internal` | **Fixed address** for SSH from Windows | `10.10.10.101` (you set it) |
+
+**Why two?** The `Default Switch` gives internet but its IP changes. The `Internal` switch lets us pick a fixed IP but has no internet. Using both gives us everything.
+
+### How to read this guide
+
+- Run commands **one at a time**. Type one command, press **Enter**, read the result, then continue.
+- Text after a `#` is a note for you. Do not type it.
 
 ## Prerequisites
 
 - Windows 10/11 Pro/Enterprise with Hyper-V enabled
 - AlmaLinux 10 ISO
-- **RAM:** 2 GB minimum, 4 GB maximum
-- **Disk:** 20 GB minimum
-- **CPU:** 1 vCPU minimum, 2 vCPU recommended
-
-> **Warning:** Do not go below 2 GB RAM or 20 GB disk. AlmaLinux 10's installer alone needs ~1.5–2 GB, and the LAMP stack in Part 2 will not fit on 10 GB. 1 GB / 10 GB will fail partway through the install.
+- 2 GB RAM minimum (4 GB recommended), 20 GB disk
 
 ---
+
+# Part A - Hyper-V and Windows Setup
 
 ## Step 1 - Create the VM
 
 1. Open **Hyper-V Manager → New → Virtual Machine**.
-2. Name the VM and choose **Generation 2** (UEFI, better performance).
-3. **Assign memory:** set **Startup memory to 2 GB (2048 MB)**.
-   - Optionally enable **Dynamic Memory** with:
-     - Minimum RAM: `2048 MB`
-     - Maximum RAM: `4096 MB`
-   - This keeps idle usage at ~2 GB and lets it burst to 4 GB during `dnf install` or MariaDB work.
-4. **Configure networking:** for now, leave it on `Default Switch` (we add the internal one in Steps 2–4).
-5. **Create a virtual hard disk:** **20 GB minimum**, dynamically expanding.
-6. **Attach the AlmaLinux 10 ISO** → Finish.
-7. **Before starting the VM, fix Secure Boot** — see Step 1a.
+2. Name the VM and choose **Generation 2**.
+3. Memory: **4 GB** recommended.
+4. Virtual hard disk: **20 GB** minimum.
+5. Attach the AlmaLinux 10 ISO.
+6. Install with **Minimal Install** and set a **root password** (remember it).
 
-### 1a. Fix Secure Boot BEFORE first boot (do not skip)
+> If the VM will not boot the ISO: VM Settings → Security → set the Secure Boot template to *Microsoft UEFI Certificate Authority*.
 
-**Generation 2 VMs have Secure Boot enabled by default.** AlmaLinux's bootloader is **not signed with a Microsoft-trusted certificate**, so the VM refuses to boot the ISO and shows:
-
-```
-Virtual Machine Boot Summary
-1. SCSI DVD (0,1)
-   The image's hash and certificate are not allowed (DB).
-...
-No operating system was loaded.
-```
-
-**This is not an ISO problem and not a Hyper-V bug — it is Secure Boot doing its job.**
-
-You have **two fixes**. Pick one:
-
-#### Option A — Switch the Secure Boot template (keeps Secure Boot on) - recommended
-
-1. Right-click the VM → **Settings**.
-2. Left pane → **Security**.
-3. Keep **Enable Secure Boot** checked.
-4. Change **Template** from `Microsoft Windows` to **`Microsoft UEFI Certificate Authority`**.
-5. **Apply → OK**.
-
-This template trusts the UEFI CA that signs Linux bootloaders, so AlmaLinux boots while Secure Boot stays enabled.
-
-#### Option B — Disable Secure Boot (simplest for a lab)
-
-1. Right-click the VM → **Settings**.
-2. Left pane → **Security**.
-3. **Uncheck** `Enable Secure Boot`.
-4. **Apply → OK**.
-
-Either option works. Option A is closer to production; Option B is one click. For this lab, **either is fine**.
-
-> **If you already tried to boot and got the error:** the VM is not broken. Apply Option A or B, then start the VM again.
-
-### 1b. Install AlmaLinux
-
-1. Start the VM and connect to the console.
-2. Walk through the Anaconda installer.
-3. Choose the **Minimal Install** profile.
-4. Set a **root password** (and optionally create a user).
-5. Reboot when finished.
-
-> **Why minimal install?** Fewer packages mean a smaller attack surface and less to patch. We add only what we need in Part 2.
-
-## Step 2 - Create an Internal Virtual Switch
+## Step 2 - Create the Internal Virtual Switch
 
 1. Hyper-V Manager → **Virtual Switch Manager → New virtual network switch**.
-2. Select **Internal** → **Create Virtual Switch**.
+2. Choose **Internal** → **Create Virtual Switch**.
 3. Name it `vSwitch-Internal` → **Apply → OK**.
 
-An *Internal* switch connects only the VM and the Windows host. It is **not** exposed to your physical LAN or the internet.
-
-## Step 3 - Configure the Windows Host Adapter
-
-Windows creates a virtual adapter for the switch. Give it a static IP so it sits on the same subnet as the VM.
+## Step 3 - Set the Windows Adapter IP
 
 1. Control Panel → Network and Sharing Center → **Change adapter settings**.
 2. Right-click `vEthernet (vSwitch-Internal)` → **Properties**.
-3. Select **Internet Protocol Version 4 (TCP/IPv4)** → **Properties**.
-4. Set:
+3. Double-click **Internet Protocol Version 4 (TCP/IPv4)**.
+4. Choose "Use the following IP address" and enter:
 
 | Field | Value |
 |---|---|
@@ -116,339 +64,439 @@ Windows creates a virtual adapter for the switch. Give it a static IP so it sits
 | Subnet mask | `255.255.255.0` |
 | Default gateway | *(leave blank)* |
 
-**Why leave the gateway blank?** Windows already has a default route to the internet. Adding another gateway here could break the host's own connectivity.
+Leave the gateway blank. Windows already has its own route to the internet.
 
-## Step 4 - Attach the VM to the Internal Switch
+## Step 4 - Attach the Adapters to the VM
+
+The VM needs **two** adapters, in this order:
+
+| Adapter in Hyper-V | Virtual switch | Becomes |
+|---|---|---|
+| Network Adapter (first) | `Default Switch` | `eth0` |
+| Network Adapter (second) | `vSwitch-Internal` | `eth1` |
 
 1. Right-click the VM → **Settings**.
-2. **Network Adapter** → Virtual switch = `vSwitch-Internal` → **OK**.
+2. Click the first **Network Adapter** → Virtual switch = `Default Switch` → **Apply**.
+3. Click **Add Hardware → Network Adapter → Add**.
+4. On the new adapter, Virtual switch = `vSwitch-Internal` → **OK**.
 
-> **Important:** This is the adapter that will appear as `eth0` inside the VM. Note which adapter you set to which switch — you'll need to keep them straight when configuring IPs.
-
-## Step 5 - Add a Second Adapter for Internet
-
-1. VM → **Settings → Add Hardware → Network Adapter**.
-2. Virtual switch = `Default Switch` → **OK**.
-
-**Result:** the VM has two NICs — one for a stable internal address, one for internet.
+> **Already added both adapters?** Do not add them again. You will check which is which in Step 5.
 
 ---
 
-## Step 6 - Boot the VM and Confirm Both NICs Are Visible
+# Part B - Network Setup Inside the VM
 
-Log into the VM console as `root`.
+Start the VM and log in as `root` on the **Hyper-V console** (not SSH).
 
-**Check that both interfaces exist:**
+## Step 5 - Check Which Adapter Is Which
 
-```bash
-ip a
-```
-
-Expected: you should see `eth0` and `eth1` (plus `lo`). Both should show `state UP`.
-
-> **If `eth0` or `eth1` is missing from `ip a`:** the vNIC is not attached in Hyper-V. Go back to Steps 4 and 5, verify both adapters are assigned to the correct switches, and reboot the VM.
-
-**Check NetworkManager's view:**
+Show all adapters and their addresses:
 
 ```bash
-nmcli connection show
-nmcli device status
+ip -br a
 ```
 
-You may see something like:
+You should see something like:
 
 ```
-NAME    DEVICE
-eth1    eth1
-lo      lo
-eth0    --          <-- exists but not bound to a device
+eth0    UP    172.x.x.x/20
+eth1    UP
 ```
 
-The `--` in the DEVICE column is the exact problem you hit. It means the connection profile exists but NetworkManager hasn't attached it to the NIC. The next step fixes it.
-
-## Step 7 - Configure the Static IP on `eth0`
-
-> **First, confirm the connection name that maps to `eth0`.** Run:
-> ```bash
-> nmcli -t -f NAME,DEVICE connection show
-> ```
-> Use whatever name appears next to `eth0`. In this guide we assume it is literally `eth0`. If yours is `"Wired connection 1"` or similar, substitute it in every command below.
-
-```bash
-nmcli connection modify eth0 ipv4.method manual
-nmcli connection modify eth0 ipv4.addresses 10.10.10.101/24
-nmcli connection modify eth0 ipv4.gateway 10.10.10.1
-nmcli connection modify eth0 ipv4.dns "8.8.8.8 1.1.1.1"
-nmcli connection modify eth0 connection.autoconnect yes
-nmcli connection up eth0
-```
-
-| Command | What it does |
+| Result | Meaning |
 |---|---|
-| `ipv4.method manual` | Disables DHCP on this interface |
-| `ipv4.addresses` | Sets the fixed IP and subnet (`/24` = `255.255.255.0`) |
-| `ipv4.gateway` | Sets the default gateway (the Windows host) |
-| `ipv4.dns` | Sets Google and Cloudflare DNS resolvers |
-| `connection.autoconnect yes` | Ensures it comes up on every boot |
-| `connection up` | Attaches the profile to the device and applies it |
+| `eth0` has `172.x.x.x`, `eth1` has no IP | Correct. Go to Step 6. |
+| `eth1` has `172.x.x.x`, `eth0` has no IP | Reversed. Fix below. |
 
-**Verify the binding and the IP:**
+**If reversed:** in Hyper-V, shut down the VM, open Settings, and swap the switches: first adapter = `Default Switch`, second = `vSwitch-Internal`. Start the VM and run `ip -br a` again.
+
+Now show the connection names:
 
 ```bash
 nmcli connection show
-ip a show eth0
 ```
 
-Expected:
+Look at the **NAME** and **DEVICE** columns. Ideally the NAME matches the DEVICE (`eth0` and `eth1`). If NAME is something else, such as `Wired connection 1`, rename it so it matches (see Step 6).
 
-```
-NAME    DEVICE
-eth1    eth1
-lo      lo
-eth0    eth0       <-- now bound
-```
+## Step 6 - Make Connection Names Match Device Names
 
-And `ip a show eth0` should include:
+Skip any command here if the NAME already equals the DEVICE.
 
-```
-inet 10.10.10.101/24 brd 10.10.10.255 scope global noprefixroute eth0
+Rename the connection on `eth0` (replace `Wired connection 1` with the NAME shown next to `eth0`):
+
+```bash
+nmcli connection modify "Wired connection 1" connection.id eth0
 ```
 
-> **If `nmcli connection up eth0` fails** with an error about the device being unavailable, run:
+Rename the connection on `eth1` (replace `Wired connection 2` with the NAME shown next to `eth1`):
+
+```bash
+nmcli connection modify "Wired connection 2" connection.id eth1
+```
+
+Check again:
+
+```bash
+nmcli connection show
+```
+
+Both NAME and DEVICE should now show `eth0` and `eth1`.
+
+> **If `eth1` has no connection at all**, create it:
+>
 > ```bash
-> nmcli device disconnect eth0
-> nmcli device connect eth0
-> nmcli connection up eth0
+> nmcli connection add type ethernet ifname eth1 con-name eth1
 > ```
-> This forces NetworkManager to claim the NIC.
 
-## Step 8 - Confirm `eth1` Has Its DHCP Address
+## Step 7 - Check the Default Connection (eth0) First
 
-`eth1` is on the Default Switch and gets its IP automatically. Check it:
+> **IMPORTANT - check before changing anything**
+>
+> `eth0` usually already works on its own (automatic IP + internet). Test it first:
+>
+> ```bash
+> ping -c 4 8.8.8.8
+> ```
+>
+> - **Replies received** → internet works. **Do NOT touch `eth0`.** Skip Step 9 and go to Step 8.
+> - **No replies / "Network is unreachable"** → continue to Step 8 anyway, then do Step 9 only if it is still not working.
+
+## Step 8 - eth1 (Internal): Fixed IP (Do This First)
+
+> **Do this on the Hyper-V console.** If you are connected by SSH, the `down` command below will disconnect you.
+
+Turn off automatic IP:
 
 ```bash
-nmcli device status
-ip a show eth1
+nmcli connection modify eth1 ipv4.method manual
 ```
 
-Expected: `eth1` is `connected` and has an `inet 172.x.x.x/28` address.
-
-If `eth1` has no IP:
+Set the fixed IP:
 
 ```bash
-nmcli device connect eth1
+nmcli connection modify eth1 ipv4.addresses 10.10.10.101/24
+```
+
+Stop this adapter from being the internet route:
+
+```bash
+nmcli connection modify eth1 ipv4.never-default yes
+```
+
+Start it automatically at boot:
+
+```bash
+nmcli connection modify eth1 connection.autoconnect yes
+```
+
+Apply the changes:
+
+```bash
+nmcli connection down eth1
+```
+
+```bash
 nmcli connection up eth1
 ```
 
-> **Note:** The connection name bound to `eth1` may not literally be `eth1`. Use `nmcli -t -f NAME,DEVICE connection show` to find the real name paired with `eth1`, and substitute it in the commands below.
+**Why no gateway or DNS on eth1?** It only talks to your Windows PC (`10.10.10.1`). `eth0` handles the internet.
 
-## Step 9 - Fix Route Priority (only one default route)
+> **Now test the internet again:**
+>
+> ```bash
+> ping -c 4 8.8.8.8
+> ```
+>
+> - **Replies** → done, go to Step 10. Skip Step 9.
+> - **No replies** → do Step 9 to fix `eth0`.
 
-**The problem:** both NICs may claim to be the default route. `eth0` has no internet, so if it wins, all outbound traffic fails.
+## Step 9 - Fix eth0 (Only If Internet Is Not Working)
 
-**The fix:** forbid `eth0` from being a default route, and give `eth1` a low metric (lower = higher priority).
+> **Skip this step if `ping -c 4 8.8.8.8` already works.** Only do it after Step 8 is finished and internet still fails.
+
+Use automatic IP (DHCP):
 
 ```bash
-nmcli connection modify eth0 ipv4.never-default yes
-nmcli connection modify eth1 ipv4.route-metric 50
-nmcli connection down eth0 && nmcli connection up eth0
-nmcli connection down eth1 && nmcli connection up eth1
+nmcli connection modify eth0 ipv4.method auto
 ```
 
-**Verify:**
+Start it automatically at boot:
+
+```bash
+nmcli connection modify eth0 connection.autoconnect yes
+```
+
+Bring it up:
+
+```bash
+nmcli connection up eth0
+```
+
+## Step 10 - Check Everything
+
+Show the addresses:
+
+```bash
+ip -br a
+```
+
+Expected: `eth0` has `172.x.x.x`, `eth1` has `10.10.10.101/24`.
+
+Show the routes:
 
 ```bash
 ip route
 ```
 
-Expected: a **single** `default via ... dev eth1` line, plus the two subnet routes:
+Expected: exactly **one** line starting with `default via`, and it ends with `dev eth0`.
 
-```
-default via 172.18.40.33 dev eth1
-10.10.10.0/24 dev eth0 proto kernel scope link src 10.10.10.101
-172.18.40.0/28 dev eth1 proto kernel scope link src 172.18.40.x
-```
-
-> **If `ipv4.never-default` gives a "setting not found" error**, do it interactively:
-> ```bash
-> nmcli connection edit eth0
-> nmcli> set ipv4.never-default yes
-> nmcli> save
-> nmcli> quit
-> ```
-
-## Step 10 - Test Connectivity
+Test the internet by IP address:
 
 ```bash
-ping -c 2 10.10.10.1        # Windows host on the internal switch
-ping -c 4 8.8.8.8           # internet (raw IP, bypasses DNS)
-ping -c 2 google.com        # DNS resolution
+ping -c 4 8.8.8.8
 ```
 
-All three should succeed. If `10.10.10.1` fails, re-check Step 3 (host adapter IP). If `8.8.8.8` fails, re-check Step 9 (`ip route`). If only `google.com` fails, re-check `ipv4.dns` in Step 7.
+Test internet names (DNS):
+
+```bash
+ping -c 2 google.com
+```
+
+Both should show replies. Press `Ctrl+C` if a ping does not stop by itself.
+
+On **Windows**, open Command Prompt and run:
+
+```
+ping 10.10.10.101
+```
+
+You should get replies too.
 
 ---
 
-## Step 11 - Enable SSH Root Login
+# Part C - SSH Access
 
-AlmaLinux ships with `PermitRootLogin prohibit-password` (set in `/etc/ssh/sshd_config.d/50-redhat.conf`), which blocks password-based root SSH. We override it with a drop-in file.
+## Step 11 - Allow Root Login with a Password
+
+Create the file with both settings:
 
 ```bash
-echo -e "PermitRootLogin yes\nPasswordAuthentication yes" > /etc/ssh/sshd_config.d/99-custom.conf
+printf "PermitRootLogin yes\nPasswordAuthentication yes\n" > /etc/ssh/sshd_config.d/01-custom.conf
+```
+
+Check the file:
+
+```bash
+cat /etc/ssh/sshd_config.d/01-custom.conf
+```
+
+Expected output:
+
+```
+PermitRootLogin yes
+PasswordAuthentication yes
+```
+
+Check the SSH settings for mistakes (no output means OK):
+
+```bash
+sshd -t
+```
+
+Restart SSH:
+
+```bash
 systemctl restart sshd
-sshd -T | grep -E "permitrootlogin|passwordauthentication"
 ```
 
-Both values should return `yes`.
+Confirm the settings are active:
 
-**Why a drop-in file?** Files in `sshd_config.d/` are read in alphabetical order, and the first value wins for most options in OpenSSH. Check with `sshd -T` to confirm the effective result rather than assuming.
+```bash
+sshd -T | grep -i permitrootlogin
+```
 
-> **Security warning:** Root login with a password is convenient for a lab but **not recommended for production**. See [04 - Security Hardening](04-security-hardening.md) for the secure replacement.
+```bash
+sshd -T | grep -i passwordauthentication
+```
 
-## Step 12 - Connect via MobaXterm
+Both must say `yes`.
 
-1. Open MobaXterm on the Windows host.
-2. **Session → SSH**.
-3. Fill in:
+> **Side note - also try this if password login does not work properly**
+>
+> Add the keyboard-interactive option as well. SSH still asks for your normal root password (through PAM), but some setups accept it when plain password authentication fails.
+>
+> ```bash
+> echo "KbdInteractiveAuthentication yes" >> /etc/ssh/sshd_config.d/01-custom.conf
+> ```
+>
+> ```bash
+> sshd -t
+> ```
+>
+> ```bash
+> systemctl restart sshd
+> ```
+>
+> ```bash
+> sshd -T | grep -i kbdinteractiveauthentication
+> ```
+>
+> It must say `yes`. Keep both options in the file, so the file now has three lines. Then try MobaXterm again.
 
-| Field | Value |
+> **Common typo:** `sshd -T` (with a **d**) checks the SSH server. `ssh -T` is a different command and only prints help text.
+
+> **Security warning:** Root password login is fine for a learning lab, but not for a real server. Guide 04 covers the safe replacement.
+
+### If `sshd -t` reports a bad configuration option
+
+Re-check the spelling in the file:
+
+```bash
+cat /etc/ssh/sshd_config.d/01-custom.conf
+```
+
+Check the OpenSSH version:
+
+```bash
+ssh -V
+```
+
+To see which options are valid on your build:
+
+```bash
+man sshd_config | grep -iE "password|kbdinteractive"
+```
+
+### If `PermitRootLogin` still says `prohibit-password`
+
+Another file is overriding yours. Find it:
+
+```bash
+grep -rn "PermitRootLogin" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/
+```
+
+If a file other than yours has an active `PermitRootLogin` line (no `#` at the start), edit that file or rename yours so it sorts first.
+
+If nothing helps, edit the main file. First make a backup:
+
+```bash
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+```
+
+Open it in the `vi` editor:
+
+```bash
+vi /etc/ssh/sshd_config
+```
+
+| Key | What it does |
 |---|---|
-| Remote host | `10.10.10.101` |
-| Specify username | `root` |
-| Port | `22` |
+| `/PermitRootLogin` then Enter | Search for the line |
+| `i` | Start typing (insert mode) |
+| `Esc` | Stop typing |
+| `:wq` then Enter | Save and quit |
+| `:q!` then Enter | Quit without saving |
 
-4. Click **OK**, then double-click the saved session.
-5. Enter the root password when prompted.
+Change the line to `PermitRootLogin yes` (remove the `#` at the start). Do the same for `PasswordAuthentication yes` (and `KbdInteractiveAuthentication yes` if you use the side note). Save, then repeat the `sshd -t`, `systemctl restart sshd` and `sshd -T` checks above, one at a time.
 
-You should land in a shell prompt: `[root@localhost ~]#`.
+## Step 12 - Connect with MobaXterm
 
-> **If SSH is refused or times out:** confirm on the VM console that `sshd` is running and the firewall allows port 22:
-> ```bash
-> systemctl status sshd
-> firewall-cmd --list-services
-> ```
-> If `ssh` is not listed:
-> ```bash
-> firewall-cmd --permanent --add-service=ssh
-> firewall-cmd --reload
-> ```
+1. Click **Session → SSH**.
+2. Remote host: `10.10.10.101`
+3. Tick **Specify username** and enter `root`.
+4. Port: `22`
+5. Click **OK** and enter your root password.
 
----
-
-## Step 13 - Verify Persistence Across Reboot
-
-Reboot the VM and confirm everything comes back automatically:
+## Step 13 - Reboot Test
 
 ```bash
 reboot
 ```
 
-After it comes back (log in via MobaXterm at `10.10.10.101`):
-
-```bash
-ip a show eth0        # should show 10.10.10.101/24
-ip a show eth1        # should show 172.x.x.x
-ip route              # ONE default route via eth1
-ping -c 2 google.com  # DNS + internet still work
-```
-
-If all four pass, the setup is permanent and you're ready for Part 2.
+When the VM is back, repeat **Step 10**. The IPs, the single default route and the internet should all still work.
 
 ---
 
-## Troubleshooting
+# Troubleshooting
 
-### Secure Boot (most common first-boot issue)
-
-| Symptom | Cause | Fix |
+| Problem | Likely cause | Fix |
 |---|---|---|
-| `The image's hash and certificate are not allowed (DB)` | Secure Boot rejecting AlmaLinux's unsigned bootloader | **Step 1a** — switch template to *Microsoft UEFI Certificate Authority* OR uncheck *Enable Secure Boot* |
-| `No operating system was loaded` on a Gen 2 VM | Same as above | Same fix |
-| VM boots straight to UEFI shell | Boot order wrong | Settings → Firmware → move the DVD/ISO above the disk |
+| Windows cannot ping `10.10.10.101` | Wrong IP on the VM, or wrong Windows IP/switch | Check `ip -br a` in the VM; re-check Steps 3 and 4 |
+| VM has no internet | `eth1` is the default route, or wrong gateway | `nmcli connection modify eth1 ipv4.never-default yes`; check `ip route` |
+| `eth0` has no IP | Connection not up | `nmcli connection up eth0` |
+| `eth0` and `eth1` are the wrong way round | Adapter order in Hyper-V | Redo Step 5 |
+| SSH says "permission denied" | Setting not applied, or wrong password | Check Step 11 with `sshd -T` |
+| `sshd -t` says `Bad configuration option` | Typo or stray character in the file | Re-create the file with the `printf` command in Step 11 |
+| Password login fails even though `sshd -T` shows `yes` | Plain password auth not accepted | Try the side note in Step 11 (`KbdInteractiveAuthentication yes`) |
+| Log shows `Could not get shadow information` | SELinux blocking SSH | See below |
 
-### Networking
+## SELinux blocking SSH login
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `eth0` shows in `ip a` but has no IP | Connection profile not bound to device | Step 7 — `nmcli connection up eth0`, then verify with `nmcli connection show` |
-| `nmcli connection show` shows `--` in DEVICE column for `eth0` | Same as above | Step 7 |
-| Can't ping `10.10.10.101` from Windows | Wrong host IP or wrong switch | Re-check Steps 3 and 4 |
-| VM has no internet | `eth0` is the default route | Re-run Step 9, check `ip route` |
-| `eth1` has no IP | Connection not up | `nmcli device connect eth1 && nmcli connection up eth1` |
-| `nmcli: command not found` | NetworkManager not installed | `dnf install NetworkManager -y && systemctl enable --now NetworkManager` |
-| `Error: invalid or not allowed setting 'ipv4'` | Typo or profile state issue | Use `nmcli connection edit eth0` interactively |
+**Symptom:** the connection opens but your correct password is always rejected. Check the log:
 
-### SSH
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| Connection timed out | Firewall blocking port 22 | `firewall-cmd --permanent --add-service=ssh && firewall-cmd --reload` |
-| SSH "permission denied" for root | Override not applied | Run `sshd -T` and verify Step 11 |
-| SSH rejects root with `Could not get shadow information for ROOT` in `/var/log/secure` | SELinux is blocking `sshd` from reading `/etc/shadow` | See **SELinux blocking SSH root login** below |
-
-#### SELinux blocking SSH root login
-
-**Symptom:** `sshd` accepts the connection but every login attempt fails. `/var/log/secure` shows:
-
-```
-error: Could not get shadow information for ROOT
-Failed password for invalid user root from 10.10.10.1 port 51377 ssh2
-Received disconnect from 10.10.10.1 port 51377:8: [preauth]
+```bash
+tail -n 20 /var/log/secure
 ```
 
-This is **not** a password or `sshd_config` problem. SELinux is preventing the SSH daemon from reading `/etc/shadow` to verify credentials.
+If you see `Could not get shadow information`, SELinux (a security feature) is blocking SSH from reading the password file.
 
-**Diagnose:**
+Check the SELinux mode:
 
 ```bash
 getenforce
 ```
 
-If the output is `Enforcing`, that is the cause.
+If it says `Enforcing`, that may be the cause.
 
-**Fix (temporary, until reboot):**
+**Temporary fix** (lasts until reboot):
 
 ```bash
 setenforce 0
 ```
 
-This takes effect immediately and lets you SSH back in to fix things properly.
-
-**Fix (permanent):**
+Try SSH again. If it works, make it permanent (lab use):
 
 ```bash
-sed -i 's/SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+```
+
+```bash
 reboot
 ```
 
-This keeps SELinux from interfering while still logging policy violations. Do not disable SELinux entirely — Step 04 will cover the correct contexts for the web root later.
-
-**Verify after reboot:**
+After reboot, check:
 
 ```bash
 getenforce
-# Expected: Permissive
 ```
 
-Then retry the SSH login from MobaXterm. It should now succeed.
+Expected: `Permissive`. Do **not** disable SELinux completely, because guide 04 uses it.
 
-> **Note:** If `getenforce` already returns `Permissive` or `Disabled`, the cause is elsewhere. Check whether the root account itself is locked with `passwd -S root` — an `L` in the second field means it is locked, and `passwd -u root` will unlock it.
+**If `getenforce` already says `Permissive`**, check whether the root account is locked:
+
+```bash
+passwd -S root
+```
+
+If the second word is `L`, unlock it:
+
+```bash
+passwd -u root
+```
 
 ---
 
-## Checklist
+# Checklist
 
-- [ ] VM created as **Generation 2** with **2 GB RAM** (max 4 GB via dynamic memory)
-- [ ] Virtual disk is **at least 20 GB**
-- [ ] **Secure Boot fixed before first boot** (template = *Microsoft UEFI Certificate Authority*, OR disabled)
-- [ ] AlmaLinux installed (Minimal Install)
-- [ ] `nmcli connection show` lists **both** `eth0` and `eth1` with a DEVICE bound
-- [ ] `eth0` = `10.10.10.101/24` (static)
-- [ ] `eth1` has a `172.x.x.x` address (DHCP)
-- [ ] `ip route` shows **one** default route via `eth1`
-- [ ] `ping 10.10.10.1`, `ping 8.8.8.8`, and `ping google.com` all work
-- [ ] SSH works from MobaXterm at `10.10.10.101`
-- [ ] All of the above survive a `reboot`
-- [ ] `getenforce` returns `Permissive` (or SELinux SSH issue is otherwise resolved)
+- [ ] VM installs and boots
+- [ ] Windows adapter is `10.10.10.1`
+- [ ] `eth0` (Default Switch) has a `172.x.x.x` address
+- [ ] `eth1` (vSwitch-Internal) is `10.10.10.101`
+- [ ] `ip route` shows only one `default via` line
+- [ ] `ping 8.8.8.8` and `ping google.com` work
+- [ ] Windows can `ping 10.10.10.101`
+- [ ] `sshd -T` shows `permitrootlogin yes` and `passwordauthentication yes` (plus `kbdinteractiveauthentication yes` if you used the side note)
+- [ ] MobaXterm connects as `root`
+- [ ] Everything still works after `reboot`
 
 **Next:** [02 - LAMP Stack & WordPress](02-lamp-wordpress-installation.md)
