@@ -9,9 +9,19 @@ This guide installs the **LAMP stack** and deploys **WordPress** on an AlmaLinux
 | Component | Package | Role |
 |---|---|---|
 | **L**inux | AlmaLinux 10 | Operating system |
-| **A**pache | `httpd` | Web server |
-| **M**ariaDB | `mariadb-server` | Database for WordPress content |
+| **A**pache | `httpd` | Web server that delivers WordPress pages |
+| **M**ariaDB | `mariadb-server` | Database that stores WordPress posts, users, settings, and content |
 | **P**HP | `php` + required extensions | Runs WordPress code |
+
+### What is happening in this guide?
+
+WordPress needs three main things to work:
+
+1. **Apache** receives visitor requests from the browser.
+2. **PHP** processes WordPress code.
+3. **MariaDB** stores WordPress data such as posts, pages, users, and settings.
+
+This guide installs only the essential packages needed for a simple WordPress site.
 
 **Prerequisite:** VM reachable at `10.10.10.101` with working internet. All commands run as `root`.
 
@@ -32,6 +42,10 @@ dnf install wget tar gzip rsync -y
 | `gzip` | Handling `.tar.gz` compression |
 | `rsync` | Moving extracted WordPress files into the web root |
 
+### Why are we doing this?
+
+A minimal AlmaLinux installation may not include all common utilities. These tools help us download WordPress, extract it safely, and place the files in the correct directory.
+
 ---
 
 ## Step 2 - Install Apache, MariaDB, and PHP
@@ -50,6 +64,14 @@ dnf install httpd mariadb-server php php-mysqlnd php-gd -y
 | `php-mysqlnd` | Allows PHP to connect to MariaDB |
 | `php-gd` | Allows WordPress to process images and uploads |
 
+### Why these packages?
+
+- **Apache** serves the website to visitors.
+- **MariaDB** stores WordPress data.
+- **PHP** runs WordPress.
+- **php-mysqlnd** is required because WordPress must connect to the database.
+- **php-gd** is required because WordPress needs to resize images, create thumbnails, and handle media uploads.
+
 > **Note:** Modern PHP includes JSON support in the core, so a separate `php-json` package is not required here.
 
 ---
@@ -59,17 +81,26 @@ dnf install httpd mariadb-server php php-mysqlnd php-gd -y
 Start Apache and MariaDB now, and make them start automatically after reboot.
 
 ```bash
-systemctl enable httpd
-systemctl enable mariadb
+systemctl enable --now httpd
+systemctl enable --now mariadb
 ```
 
 Verify both services are running:
 
 ```bash
-systemctl status httpd mariadb
+systemctl status httpd mariadb --no-pager
 ```
 
 You should see `active (running)` for both services.
+
+### Why are we doing this?
+
+Installing a service does not automatically make it run forever.
+
+- `--now` starts the service immediately.
+- `enable` makes the service start automatically after reboot.
+
+This is important because Apache and MariaDB must always be running for WordPress to work.
 
 ---
 
@@ -92,6 +123,16 @@ Use these answers for this lab setup:
 | Disallow root login remotely | `Y` | Root database access should stay local |
 | Remove test database | `Y` | Removes the default unsafe test database |
 | Reload privilege tables | `Y` | Applies changes immediately |
+
+### Why are we doing this?
+
+A fresh MariaDB installation has insecure defaults, such as anonymous users and a test database. This script removes those weak settings and helps protect the database.
+
+### What is unix_socket authentication?
+
+Unix socket authentication allows the Linux `root` user to log into MariaDB as database `root` without sending a password over the network. It is more secure for local administration.
+
+We still set a MariaDB root password as an extra layer of protection.
 
 ---
 
@@ -128,6 +169,15 @@ EXIT;
 | `GRANT ALL PRIVILEGES ON wordpress.* ...` | Gives the user access only to the WordPress database |
 | `FLUSH PRIVILEGES;` | Reloads database permissions |
 | `EXIT;` | Leaves the MariaDB prompt |
+
+### Why are we doing this?
+
+WordPress needs a database to store its content.
+
+We create a dedicated database user called `wpuser` instead of using MariaDB `root`. This follows the principle of least privilege:
+
+- WordPress can access only its own database.
+- If the WordPress credentials are compromised, the attacker does not get full control of the entire database server.
 
 ---
 
@@ -179,6 +229,24 @@ wp-includes
 wp-config-sample.php
 ```
 
+### Why are we doing this?
+
+Apache serves files from `/var/www/html`. This directory is called the **web root**.
+
+WordPress downloads as a folder called `wordpress/`. If we leave it there, the site would load at:
+
+```text
+http://10.10.10.101/wordpress/
+```
+
+We move the files directly into `/var/www/html` so WordPress loads from the main address:
+
+```text
+http://10.10.10.101/
+```
+
+We also remove the archive and temporary folder to keep the web root clean.
+
 ---
 
 ## Step 7 - Configure `wp-config.php`
@@ -214,7 +282,23 @@ https://api.wordpress.org/secret-key/1.1/salt/
 
 Replace the placeholder salt lines in `wp-config.php` with the generated values.
 
-> The salts secure login cookies and sessions. Do not leave the default placeholder values.
+### Why are we doing this?
+
+`wp-config.php` tells WordPress how to connect to MariaDB.
+
+If these values are wrong, WordPress will show:
+
+```text
+Error establishing a database connection
+```
+
+### What are salts?
+
+Salts are random secret strings used to secure WordPress login cookies and sessions.
+
+They make it much harder for attackers to forge login sessions.
+
+Never leave the default placeholder values.
 
 ---
 
@@ -234,6 +318,43 @@ chmod 640 /var/www/html/wp-config.php
 | `chmod -R 755` | Sets normal web directory/file access |
 | `chmod 640 wp-config.php` | Protects the database password in `wp-config.php` |
 
+### Why are we doing this?
+
+Linux controls file access using ownership and permissions.
+
+Apache runs as a user called `apache`. If WordPress files are owned by `root`, Apache may not be able to write to them.
+
+That causes problems such as:
+
+- Cannot upload images.
+- Cannot install plugins.
+- Cannot update themes.
+- Cannot create WordPress cache folders.
+
+So we give ownership to `apache`.
+
+### What do the permissions mean?
+
+`755` means:
+
+| User type | Permission |
+|---|---|
+| Owner | Read, write, execute |
+| Group | Read, execute |
+| Others | Read, execute |
+
+This is normal for web files and folders.
+
+`640` on `wp-config.php` means:
+
+| User type | Permission |
+|---|---|
+| Owner | Read, write |
+| Group | Read |
+| Others | No access |
+
+This protects the database password because `wp-config.php` contains sensitive credentials.
+
 ---
 
 ## Step 9 - Allow Apache to Connect to MariaDB Through SELinux
@@ -249,6 +370,16 @@ setsebool -P httpd_can_network_connect_db on
 | `setsebool` | Changes an SELinux boolean |
 | `-P` | Makes the change persistent after reboot |
 | `httpd_can_network_connect_db` | Allows Apache to connect to a database |
+
+### Why are we doing this?
+
+SELinux is an extra security layer on top of normal Linux permissions.
+
+Even if Apache owns the files and the database password is correct, SELinux may still block Apache from connecting to MariaDB.
+
+Instead of disabling SELinux, we enable only the specific permission WordPress needs.
+
+This keeps the system secure while allowing WordPress to work.
 
 ---
 
@@ -274,6 +405,22 @@ You should see:
 http https
 ```
 
+### Why are we doing this?
+
+The firewall blocks incoming network traffic by default.
+
+- Port `80` is used for normal HTTP websites.
+- Port `443` is used for HTTPS secure websites.
+
+We open HTTPS now because Part 3 will configure SSL.
+
+### Why use `--permanent` and `--reload`?
+
+- `--permanent` saves the rule so it survives reboot.
+- `--reload` applies the saved rules to the running firewall.
+
+Without `--reload`, the permanent rule may not take effect immediately.
+
 ---
 
 ## Step 11 - Complete the WordPress Installation
@@ -298,6 +445,12 @@ After installation, log in at:
 ```text
 http://10.10.10.101/wp-admin
 ```
+
+### Why are we doing this?
+
+The WordPress wizard creates the admin user and installs the required WordPress tables inside the MariaDB database.
+
+Avoid using `admin` as the username because it is the first username attackers try during brute-force attacks.
 
 ---
 
@@ -327,6 +480,10 @@ systemctl restart httpd
 ```
 
 Then refresh the browser page.
+
+### Why does this happen?
+
+Apache may be running, but it does not know how to process PHP files. Restarting Apache after installing PHP loads the PHP module.
 
 ---
 
@@ -373,6 +530,10 @@ EXIT;
 ```
 
 Then reload the WordPress installation page.
+
+### Why does this happen?
+
+WordPress can connect to MariaDB, but it cannot access the specific database. This usually means the database name is wrong, the user does not exist, or the user has not been granted permission to use the `wordpress` database.
 
 ---
 
