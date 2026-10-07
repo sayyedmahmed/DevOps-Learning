@@ -176,6 +176,66 @@ Both values should return `yes`.
 
 ## Troubleshooting
 
+### SSH
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Can't ping `10.10.10.101` from Windows | Wrong host IP or wrong switch | Re-check Steps 3 and 4 |
+| VM has no internet | `eth0` is the default route | Re-run Step 8, check `ip route` |
+| SSH "permission denied" for root | Override not applied | Run `sshd -T` and verify Step 10 |
+| `eth1` has no IP | Connection not up | `nmcli connection up "Wired connection 1"` |
+| SSH rejects root with `Could not get shadow information for ROOT` in `/var/log/secure` | SELinux is blocking `sshd` from reading `/etc/shadow` | See **SELinux blocking SSH root login** below |
+
+#### SELinux blocking SSH root login
+
+**Symptom:** `sshd` accepts the connection but every login attempt fails. `/var/log/secure` shows:
+
+```
+error: Could not get shadow information for ROOT
+Failed password for invalid user root from 10.10.10.1 port 51377 ssh2
+Received disconnect from 10.10.10.1 port 51377:8: [preauth]
+```
+
+This is **not** a password or `sshd_config` problem. SELinux is preventing the SSH daemon from reading `/etc/shadow` to verify credentials.
+
+**Diagnose:**
+
+```bash
+getenforce
+```
+
+If the output is `Enforcing`, that is the cause.
+
+**Fix (temporary, until reboot):**
+
+```bash
+setenforce 0
+```
+
+This takes effect immediately and lets you SSH back in to fix things properly.
+
+**Fix (permanent):**
+
+```bash
+sed -i 's/SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+reboot
+```
+
+This keeps SELinux from interfering while still logging policy violations. Do not disable SELinux entirely — Step 04 will cover the correct contexts for the web root later.
+
+**Verify after reboot:**
+
+```bash
+getenforce
+# Expected: Permissive
+```
+
+Then retry the SSH login from MobaXterm. It should now succeed.
+
+> **Note:** If `getenforce` already returns `Permissive` or `Disabled`, the cause is elsewhere. Check whether the root account itself is locked with `passwd -S root` — an `L` in the second field means it is locked, and `passwd -u root` will unlock it.
+
+### Other issues
+
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Can't ping `10.10.10.101` from Windows | Wrong host IP or wrong switch | Re-check Steps 3 and 4 |
@@ -191,5 +251,7 @@ Both values should return `yes`.
 - [ ] `ip route` shows one default route via `eth1`
 - [ ] `ping 8.8.8.8` works
 - [ ] SSH works from MobaXterm
+- [ ] `getenforce` returns `Permissive` (or SELinux SSH issue is otherwise resolved)
 
 **Next:** [02 - LAMP Stack & WordPress](02-lamp-wordpress-installation.md)
+```
