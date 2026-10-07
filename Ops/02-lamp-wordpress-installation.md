@@ -4,90 +4,113 @@
 
 ## Overview
 
-This guide installs the **LAMP stack** and deploys **WordPress** on the VM from Part 1.
+This guide installs the **LAMP stack** and deploys **WordPress** on an AlmaLinux 10 VM for a simple WordPress project.
 
 | Component | Package | Role |
 |---|---|---|
 | **L**inux | AlmaLinux 10 | Operating system |
 | **A**pache | `httpd` | Web server |
 | **M**ariaDB | `mariadb-server` | Database for WordPress content |
-| **P**HP | `php` + extensions | Runs WordPress code |
+| **P**HP | `php` + required extensions | Runs WordPress code |
 
-**Prerequisite:** VM reachable at `10.10.10.101` with working internet (see Part 1). All commands run as `root`.
+**Prerequisite:** VM reachable at `10.10.10.101` with working internet. All commands run as `root`.
 
 ---
 
-## Step 1 - Install Base Tools
+## Step 1 - Install Download and Extraction Tools
+
+WordPress is downloaded as a compressed archive, so these tools are needed.
 
 ```bash
-dnf install tar gzip wget rsync openssl net-tools vim -y
+dnf install wget tar gzip rsync -y
 ```
-
-A minimal install omits common utilities:
 
 | Tool | Used for |
 |---|---|
-| `tar`, `gzip` | Extracting the WordPress archive |
-| `wget` | Downloading files |
-| `rsync` | Copying files with progress |
-| `openssl` | Certificates (Part 3) |
-| `net-tools` | `netstat`/`ifconfig` for diagnostics |
-| `vim` | Text editor (`vi`) |
+| `wget` | Downloading the WordPress archive |
+| `tar` | Extracting the archive |
+| `gzip` | Handling `.tar.gz` compression |
+| `rsync` | Moving extracted WordPress files into the web root |
 
-## Step 2 - Install Apache, MariaDB and PHP
+---
+
+## Step 2 - Install Apache, MariaDB, and PHP
+
+For a simple WordPress setup, install only the core packages needed to run WordPress and handle media.
 
 ```bash
-dnf install httpd mariadb-server php php-mysqlnd php-gd php-xml php-mbstring php-json php-zip php-curl -y
+dnf install httpd mariadb-server php php-mysqlnd php-gd -y
 ```
 
-| PHP extension | Why WordPress needs it |
+| Package | Why it is needed |
 |---|---|
-| `php-mysqlnd` | Connects PHP to MariaDB |
-| `php-gd` | Image processing (thumbnails, resizing) |
-| `php-xml` | XML parsing (feeds, sitemaps, plugins) |
-| `php-mbstring` | Multibyte/UTF-8 text handling |
-| `php-json` | JSON handling (REST API, block editor) |
-| `php-zip` | Plugin/theme installs and updates |
-| `php-curl` | Outbound HTTP requests (updates, APIs) |
+| `httpd` | Apache web server |
+| `mariadb-server` | Database server for WordPress content |
+| `php` | PHP runtime for WordPress |
+| `php-mysqlnd` | Allows PHP to connect to MariaDB |
+| `php-gd` | Allows WordPress to process images and uploads |
 
-> **Note:** On newer PHP versions `php-json` is built into the core; if `dnf` reports it as missing or already included, that is fine.
+> **Note:** Modern PHP includes JSON support in the core, so a separate `php-json` package is not required here.
+
+---
 
 ## Step 3 - Enable and Start Services
+
+Start Apache and MariaDB now, and make them start automatically after reboot.
 
 ```bash
 systemctl enable --now httpd
 systemctl enable --now mariadb
 ```
 
-`enable --now` does two things at once: **starts** the service immediately and **enables** it to start on every boot.
+Verify both services are running:
 
-**Verify:**
 ```bash
 systemctl status httpd mariadb --no-pager
 ```
 
+You should see `active (running)` for both services.
+
+---
+
 ## Step 4 - Secure MariaDB
+
+Run the MariaDB security script:
 
 ```bash
 mysql_secure_installation
 ```
 
-Recommended answers:
+Use these answers for this lab setup:
 
 | Prompt | Answer | Reason |
 |---|---|---|
-| Switch to unix_socket authentication | `n` | Keep standard password login for the root DB user |
-| Change root password | `n` | Only if none was set; otherwise set one |
-| Remove anonymous users | `y` | Anonymous accounts allow unauthenticated access |
-| Disallow root login remotely | `y` | Root DB access should be local only (`n` acceptable for a local-only lab VM) |
-| Remove test database | `y` | Test DB is accessible by anyone by default |
-| Reload privilege tables | `y` | Applies all changes immediately |
+| Enter current password for root | Press Enter if fresh install | New MariaDB installs may not have a root password yet |
+| Switch to unix_socket authentication | `Y` | Secures local root database access |
+| Change the root password | `Y` | Set a strong MariaDB root password |
+| Remove anonymous users | `Y` | Prevents unauthenticated database access |
+| Disallow root login remotely | `Y` | Root database access should stay local |
+| Remove test database | `Y` | Removes the default unsafe test database |
+| Reload privilege tables | `Y` | Applies changes immediately |
 
-## Step 5 - Create the WordPress Database
+---
+
+## Step 5 - Create the WordPress Database and User
+
+Log in to MariaDB:
 
 ```bash
 mysql -u root -p
 ```
+
+If unix_socket authentication is working and you are logged in as Linux `root`, this may also work:
+
+```bash
+mysql -u root
+```
+
+Inside the MariaDB prompt, run:
+
 ```sql
 CREATE DATABASE wordpress;
 CREATE USER 'wpuser'@'localhost' IDENTIFIED BY 'StrongPass123!';
@@ -96,38 +119,84 @@ FLUSH PRIVILEGES;
 EXIT;
 ```
 
-| Statement | Purpose |
-|---|---|
-| `CREATE DATABASE` | Creates the empty database for WordPress |
-| `CREATE USER ... @'localhost'` | Dedicated user, usable only from this machine |
-| `GRANT ... ON wordpress.*` | Privileges limited to **this database only** (least privilege) |
-| `FLUSH PRIVILEGES` | Reloads grant tables |
+> Replace `StrongPass123!` with your own strong password.
 
-> **Security:** `StrongPass123!` is an **example**. Use a unique, randomly generated password and never commit real credentials to GitHub.
+| SQL command | Purpose |
+|---|---|
+| `CREATE DATABASE wordpress;` | Creates the database WordPress will use |
+| `CREATE USER 'wpuser'@'localhost' ...` | Creates a dedicated WordPress database user |
+| `GRANT ALL PRIVILEGES ON wordpress.* ...` | Gives the user access only to the WordPress database |
+| `FLUSH PRIVILEGES;` | Reloads database permissions |
+| `EXIT;` | Leaves the MariaDB prompt |
+
+---
 
 ## Step 6 - Download WordPress
 
+Move to Apache's web root:
+
 ```bash
 cd /var/www/html
+```
+
+Download the latest WordPress release:
+
+```bash
 wget https://wordpress.org/latest.tar.gz
+```
+
+Extract the archive:
+
+```bash
 tar xzvf latest.tar.gz
+```
+
+Move the WordPress files into the main web root:
+
+```bash
 rsync -avP wordpress/ /var/www/html/
+```
+
+Remove the temporary folder and archive:
+
+```bash
 rm -rf wordpress latest.tar.gz
 ```
 
-1. Download the latest release into Apache's web root.
-2. Extract it (creates a `wordpress/` subfolder).
-3. Move the contents up so the site loads at `/` instead of `/wordpress/`.
-4. Remove the leftover folder and archive.
+Verify the WordPress files are present:
+
+```bash
+ls -lh /var/www/html
+```
+
+You should see files and folders such as:
+
+```text
+index.php
+wp-admin
+wp-content
+wp-includes
+wp-config-sample.php
+```
+
+---
 
 ## Step 7 - Configure `wp-config.php`
 
+Copy the sample configuration file:
+
 ```bash
 cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
+```
+
+Edit the file:
+
+```bash
 vi /var/www/html/wp-config.php
 ```
 
-Set the database connection:
+Set the database connection values:
+
 ```php
 define( 'DB_NAME', 'wordpress' );
 define( 'DB_USER', 'wpuser' );
@@ -135,11 +204,23 @@ define( 'DB_PASSWORD', 'StrongPass123!' );
 define( 'DB_HOST', 'localhost' );
 ```
 
-Generate authentication keys and salts at `https://api.wordpress.org/secret-key/1.1/salt/` and paste them over the placeholder `define(...)` lines.
+Use the same password created in Step 5.
 
-**Why the keys matter:** they encrypt login cookies and sessions. Default placeholder values make sessions easier to forge.
+Generate WordPress salts here:
 
-## Step 8 - Set Permissions
+```text
+https://api.wordpress.org/secret-key/1.1/salt/
+```
+
+Replace the placeholder salt lines in `wp-config.php` with the generated values.
+
+> The salts secure login cookies and sessions. Do not leave the default placeholder values.
+
+---
+
+## Step 8 - Set Ownership and Permissions
+
+Apache must own the WordPress files so WordPress can upload media and update itself.
 
 ```bash
 chown -R apache:apache /var/www/html
@@ -147,21 +228,33 @@ chmod -R 755 /var/www/html
 chmod 640 /var/www/html/wp-config.php
 ```
 
-| Command | Effect |
+| Command | Purpose |
 |---|---|
-| `chown -R apache:apache` | Apache can read/write files (needed for uploads and updates) |
-| `chmod -R 755` | Owner full access; others read/execute |
-| `chmod 640 wp-config.php` | Contains DB credentials, so other users get no access |
+| `chown -R apache:apache` | Gives Apache ownership of WordPress files |
+| `chmod -R 755` | Sets normal web directory/file access |
+| `chmod 640 wp-config.php` | Protects the database password in `wp-config.php` |
 
-## Step 9 - SELinux: Allow Apache to Reach MariaDB
+---
+
+## Step 9 - Allow Apache to Connect to MariaDB Through SELinux
+
+AlmaLinux uses SELinux. By default, SELinux can block Apache/PHP from connecting to the database.
 
 ```bash
 setsebool -P httpd_can_network_connect_db on
 ```
 
-SELinux blocks Apache from making database connections by default. This sets **one specific boolean** instead of disabling SELinux. `-P` makes it persistent across reboots.
+| Part | Meaning |
+|---|---|
+| `setsebool` | Changes an SELinux boolean |
+| `-P` | Makes the change persistent after reboot |
+| `httpd_can_network_connect_db` | Allows Apache to connect to a database |
+
+---
 
 ## Step 10 - Open Firewall Ports
+
+Allow HTTP and HTTPS traffic:
 
 ```bash
 firewall-cmd --permanent --add-service=http
@@ -169,38 +262,127 @@ firewall-cmd --permanent --add-service=https
 firewall-cmd --reload
 ```
 
-**Verify:**
+Verify the firewall services:
+
 ```bash
 firewall-cmd --list-services
 ```
 
-## Step 11 - Complete the WordPress Installation
+You should see:
 
-1. Open `http://10.10.10.101` in a browser on the Windows host.
-2. Follow the setup wizard: site title, admin username, password, email.
-
-> **Tip:** Avoid the username `admin`. Non-default usernames reduce brute-force exposure.
+```text
+http https
+```
 
 ---
 
-## Troubleshooting
+## Step 11 - Complete the WordPress Installation
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| "Error establishing a database connection" | Wrong credentials or SELinux | Re-check `wp-config.php`; confirm Step 9 |
-| Apache default page appears | WordPress files not in web root | Check `ls /var/www/html` |
-| Page won't load from host | Firewall | Step 10; `firewall-cmd --list-services` |
-| Can't upload media or install plugins | Ownership/permissions | Re-run Step 8 |
-| Check Apache errors | - | `tail -f /var/log/httpd/error_log` |
+Open a browser on the Windows host and go to:
 
-## Checklist
+```text
+http://10.10.10.101
+```
 
-- [ ] `httpd` and `mariadb` running and enabled
-- [ ] MariaDB secured
-- [ ] `wordpress` database and `wpuser` created
-- [ ] `wp-config.php` configured with real salts
-- [ ] Permissions and SELinux boolean set
-- [ ] Ports 80/443 open
-- [ ] WordPress wizard completed
+Complete the WordPress wizard:
 
-**Next:** [03 - SSL & HTTPS](03-ssl-https-configuration.md)
+| Field | Recommendation |
+|---|---|
+| Site Title | Your project name |
+| Username | Do not use `admin` |
+| Password | Use a strong password |
+| Email | Your email address |
+
+After installation, log in at:
+
+```text
+http://10.10.10.101/wp-admin
+```
+
+---
+
+## Troubleshooting From This Setup
+
+### 1. Browser Shows Raw PHP Code
+
+Symptom:
+
+```text
+<?php phpinfo(); ?>
+```
+
+appears as plain text instead of a PHP page.
+
+Check whether Apache loaded PHP:
+
+```bash
+httpd -M | grep php
+```
+
+If there is no `php_module` output, install PHP and restart Apache:
+
+```bash
+dnf install php -y
+systemctl restart httpd
+```
+
+Then refresh the browser page.
+
+---
+
+### 2. WordPress Says "Cannot Select Database"
+
+This means WordPress connected to MariaDB, but the database or user permission is wrong.
+
+Log in to MariaDB:
+
+```bash
+mysql -u root -p
+```
+
+Check that the database exists:
+
+```sql
+SHOW DATABASES;
+```
+
+You should see:
+
+```text
+wordpress
+```
+
+If it is missing, create it:
+
+```sql
+CREATE DATABASE wordpress;
+```
+
+Check the user:
+
+```sql
+SELECT user, host FROM mysql.user WHERE user = 'wpuser';
+```
+
+Grant access again:
+
+```sql
+GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+```
+
+Then reload the WordPress installation page.
+
+---
+
+## References
+
+For more documentation, I followed these links:
+
+- DigitalOcean: [How To Install Linux, Apache, MySQL, PHP LAMP Stack on CentOS 7](https://www.digitalocean.com/community/tutorials/how-to-install-linux-apache-mysql-php-lamp-stack-on-centos-7)
+- DigitalOcean: [How To Install WordPress on CentOS 7](https://www.digitalocean.com/community/tutorials/how-to-install-wordpress-on-centos-7)
+
+> These references are written for CentOS 7. On AlmaLinux 10, use `dnf`, `mariadb-server`, and keep SELinux enabled.
+
+**Next:** [03 - SSL & HTTPS Configuration](03-ssl-https-configuration.md)
