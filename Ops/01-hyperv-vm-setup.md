@@ -1,6 +1,3 @@
-Here is the complete, self-contained guide with **all the fixes baked in**, including the connection-binding issue you hit, so you don't need to jump between messages.
-
----
 
 # 01 - Hyper-V VM Setup (AlmaLinux 10)
 
