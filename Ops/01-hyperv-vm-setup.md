@@ -23,7 +23,11 @@ Hyper-V's `Default Switch` hands out a changing IP (DHCP) on every reboot, which
 
 - Windows 10/11 Pro/Enterprise with Hyper-V enabled
 - AlmaLinux 10 ISO
-- Minimum 2 GB RAM (4 GB recommended), 20 GB disk
+- **RAM:** 2 GB minimum, 4 GB maximum
+- **Disk:** 20 GB minimum
+- **CPU:** 1 vCPU minimum, 2 vCPU recommended
+
+> ⚠️ **Do not go below 2 GB RAM or 20 GB disk.** AlmaLinux 10's installer alone needs ~1.5–2 GB, and the LAMP stack in Part 2 will not fit on 10 GB. 1 GB / 10 GB will fail partway through the install.
 
 ---
 
@@ -31,14 +35,62 @@ Hyper-V's `Default Switch` hands out a changing IP (DHCP) on every reboot, which
 
 1. Open **Hyper-V Manager → New → Virtual Machine**.
 2. Name the VM and choose **Generation 2** (UEFI, better performance).
-3. Assign memory: 2 GB minimum, **4 GB recommended**.
-4. Create a virtual hard disk (**20 GB minimum**).
-5. Attach the AlmaLinux 10 ISO.
-6. Install using the **Minimal Install** profile and set a **root password**.
+3. **Assign memory:** set **Startup memory to 2 GB (2048 MB)**.
+   - Optionally enable **Dynamic Memory** with:
+     - Minimum RAM: `2048 MB`
+     - Maximum RAM: `4096 MB`
+   - This keeps idle usage at ~2 GB and lets it burst to 4 GB during `dnf install` or MariaDB work.
+4. **Configure networking:** for now, leave it on `Default Switch` (we add the internal one in Steps 2–4).
+5. **Create a virtual hard disk:** **20 GB minimum**, dynamically expanding.
+6. **Attach the AlmaLinux 10 ISO** → Finish.
+7. **Before starting the VM, fix Secure Boot** — see Step 1a.
 
-> **Note:** Generation 2 VMs use Secure Boot. If the VM fails to boot the ISO, open VM Settings → Security and set the Secure Boot template to *Microsoft UEFI Certificate Authority*.
+### ⚠️ 1a. Fix Secure Boot BEFORE first boot (do not skip)
 
-**Why minimal install?** Fewer packages mean a smaller attack surface and less to patch. We add only what we need later.
+**Generation 2 VMs have Secure Boot enabled by default.** AlmaLinux's bootloader is **not signed with a Microsoft-trusted certificate**, so the VM refuses to boot the ISO and shows:
+
+```
+Virtual Machine Boot Summary
+1. SCSI DVD (0,1)
+   The image's hash and certificate are not allowed (DB).
+...
+No operating system was loaded.
+```
+
+**This is not an ISO problem and not a Hyper-V bug — it is Secure Boot doing its job.**
+
+You have **two fixes**. Pick one:
+
+#### Option A — Switch the Secure Boot template (keeps Secure Boot on) ✅ recommended
+
+1. Right-click the VM → **Settings**.
+2. Left pane → **Security**.
+3. Keep **Enable Secure Boot** checked.
+4. Change **Template** from `Microsoft Windows` to **`Microsoft UEFI Certificate Authority`**.
+5. **Apply → OK**.
+
+This template trusts the UEFI CA that signs Linux bootloaders, so AlmaLinux boots while Secure Boot stays enabled.
+
+#### Option B — Disable Secure Boot (simplest for a lab)
+
+1. Right-click the VM → **Settings**.
+2. Left pane → **Security**.
+3. **Uncheck** `Enable Secure Boot`.
+4. **Apply → OK**.
+
+Either option works. Option A is closer to production; Option B is one click. For this lab, **either is fine**.
+
+> **If you already tried to boot and got the error:** the VM is not broken. Apply Option A or B, then start the VM again.
+
+### 1b. Install AlmaLinux
+
+1. Start the VM and connect to the console.
+2. Walk through the Anaconda installer.
+3. Choose the **Minimal Install** profile.
+4. Set a **root password** (and optionally create a user).
+5. Reboot when finished.
+
+> **Why minimal install?** Fewer packages mean a smaller attack surface and less to patch. We add only what we need in Part 2.
 
 ## Step 2 - Create an Internal Virtual Switch
 
@@ -46,7 +98,7 @@ Hyper-V's `Default Switch` hands out a changing IP (DHCP) on every reboot, which
 2. Select **Internal** → **Create Virtual Switch**.
 3. Name it `vSwitch-Internal` → **Apply → OK**.
 
-An *Internal* switch connects only the VM and the Windows host. It is not exposed to your physical LAN or the internet.
+An *Internal* switch connects only the VM and the Windows host. It is **not** exposed to your physical LAN or the internet.
 
 ## Step 3 - Configure the Windows Host Adapter
 
@@ -54,7 +106,7 @@ Windows creates a virtual adapter for the switch. Give it a static IP so it sits
 
 1. Control Panel → Network and Sharing Center → **Change adapter settings**.
 2. Right-click `vEthernet (vSwitch-Internal)` → **Properties**.
-3. Select **Internet Protocol Version 4 (TCP/IPv4)** → Properties.
+3. Select **Internet Protocol Version 4 (TCP/IPv4)** → **Properties**.
 4. Set:
 
 | Field | Value |
@@ -72,10 +124,10 @@ Windows creates a virtual adapter for the switch. Give it a static IP so it sits
 
 ## Step 5 - Add a Second Adapter for Internet
 
-1. VM → Settings → **Add Hardware → Network Adapter**.
+1. VM → **Settings → Add Hardware → Network Adapter**.
 2. Virtual switch = `Default Switch` → **OK**.
 
-**Result:** the VM has two NICs, one for a stable internal address and one for internet.
+**Result:** the VM has two NICs — one for a stable internal address, one for internet.
 
 ---
 
@@ -176,6 +228,14 @@ Both values should return `yes`.
 
 ## Troubleshooting
 
+### Secure Boot (most common first-boot issue)
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `The image's hash and certificate are not allowed (DB)` | Secure Boot rejecting AlmaLinux's unsigned bootloader | **Step 1a** — switch template to *Microsoft UEFI Certificate Authority* OR uncheck *Enable Secure Boot* |
+| `No operating system was loaded` on a Gen 2 VM | Same as above | Same fix |
+| VM boots straight to UEFI shell | Boot order wrong | Settings → Firmware → move the DVD/ISO above the disk |
+
 ### SSH
 
 | Symptom | Likely cause | Fix |
@@ -234,18 +294,14 @@ Then retry the SSH login from MobaXterm. It should now succeed.
 
 > **Note:** If `getenforce` already returns `Permissive` or `Disabled`, the cause is elsewhere. Check whether the root account itself is locked with `passwd -S root` — an `L` in the second field means it is locked, and `passwd -u root` will unlock it.
 
-### Other issues
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| Can't ping `10.10.10.101` from Windows | Wrong host IP or wrong switch | Re-check Steps 3 and 4 |
-| VM has no internet | `eth0` is the default route | Re-run Step 8, check `ip route` |
-| SSH "permission denied" for root | Override not applied | Run `sshd -T` and verify Step 10 |
-| `eth1` has no IP | Connection not up | `nmcli connection up "Wired connection 1"` |
+---
 
 ## Checklist
 
-- [ ] VM boots and installs successfully
+- [ ] VM created as **Generation 2** with **2 GB RAM** (max 4 GB via dynamic memory)
+- [ ] Virtual disk is **at least 20 GB**
+- [ ] **Secure Boot fixed before first boot** (template = *Microsoft UEFI Certificate Authority*, OR disabled)
+- [ ] AlmaLinux installed (Minimal Install)
 - [ ] `eth0` = `10.10.10.101`
 - [ ] `eth1` has a `172.x.x.x` address
 - [ ] `ip route` shows one default route via `eth1`
@@ -254,4 +310,3 @@ Then retry the SSH login from MobaXterm. It should now succeed.
 - [ ] `getenforce` returns `Permissive` (or SELinux SSH issue is otherwise resolved)
 
 **Next:** [02 - LAMP Stack & WordPress](02-lamp-wordpress-installation.md)
-```
