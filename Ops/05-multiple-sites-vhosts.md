@@ -1,4 +1,5 @@
-# 05 - Hosting Multiple Sites (Virtual Hosts + SSL + HTTP Redirect)
+# 05 - Hosting Multiple Sites 
+###Virtual Hosts + SSL + HTTP Redirect
 
 > **Series:** 5 of 5 | Previous: [04 - Security Hardening](04-security-hardening.md) | End of series
 
