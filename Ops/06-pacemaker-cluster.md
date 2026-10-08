@@ -1,615 +1,1131 @@
-# 06 - Simple Pacemaker Cluster (AlmaLinux 10)
+# 06 - Simple Pacemaker Cluster
+> **Prerequisite:** [01 - Hyper-V VM Setup](01-hyperv-vm-setup.md) completed (one working VM with `eth0` internet and `eth1` = `10.10.10.101`).
 
 ## Overview
 
-This guide builds a small 2-node High Availability (HA) cluster. The goal is to understand how Pacemaker works by creating two virtual machines that cooperate. If one VM fails, the other automatically takes over its services to maintain uptime.
+This guide builds a small **2-node high-availability (HA) cluster** so you can see how Pacemaker works. You will:
 
-### Concept: How It Works
+- Create two VMs, `node1` and `node2`.
+- Give the cluster a **floating IP** (`10.10.10.200`) and a **web server**.
+- Break a node on purpose and watch the service **move automatically** to the other node.
 
-Think of an HA cluster like a relay race. In a standard setup, if one runner falls, the team loses. In an HA cluster, if `node1` crashes, `node2` instantly picks up the baton (the service). The end-user never notices the switch.
+```
+                 Windows PC (browser)
+                       |
+              http://10.10.10.200   <-- floating IP (moves between nodes)
+                       |
+        +--------------+--------------+
+        |                             |
+     node1                         node2
+  10.10.10.101                  10.10.10.102
+   (eth1)                         (eth1)
+```
 
-| Term | Simple Definition |
+### Key words (read once)
+
+| Term | Simple meaning |
 |---|---|
-| **Cluster** | A group of computers acting as a single system. |
-| **Node** | One individual computer or VM in the cluster. |
-| **Corosync** | The communication layer ("telephone line") that lets nodes check on each other. |
-| **Pacemaker** | The resource manager that decides which node runs which service. |
-| **pcs** | The command-line tool used to configure and control Pacemaker. |
-| **Resource** | Any component managed by the cluster (e.g., an IP address, a web server). |
-| **Failover** | The automatic movement of resources from a failed node to a healthy one. |
-| **Quorum** | The minimum number of active nodes required for the cluster to operate safely. |
-| **Fencing (STONITH)** | Forcibly powering off a suspected-failed node to prevent data corruption. Disabled in this lab for simplicity. |
+| **Cluster** | A group of computers (nodes) working together |
+| **Node** | One computer/VM in the cluster |
+| **Corosync** | Lets the nodes talk to each other and know who is alive |
+| **Pacemaker** | The "manager" that decides which node runs which service |
+| **pcs** | The command-line tool we use to control Pacemaker |
+| **Resource** | Something the cluster manages (an IP, a web server) |
+| **Resource group** | Resources that must always run together on the same node |
+| **Failover** | Moving a service to another node when one fails |
+| **Quorum** | The "majority vote" that decides if the cluster may run |
+| **Fencing (STONITH)** | Forcibly shutting down a broken node. We turn it **off** in this lab |
 
-### Prerequisites
+### How to read this guide
 
-- One working AlmaLinux VM from [Guide 01](01-hyperv-vm-setup.md). This will become `node1`.
-- Internet connectivity on the VM (`eth0`).
-- Approximately 20 GB free disk space on the Windows host for cloning the second VM.
-- 2 GB RAM per VM (4 GB total recommended).
+- Run commands **one at a time**. Press **Enter**, read the result, then continue.
+- Every step starts with a **Run on:** label. Always check which node you are on.
+- Lines after `#` are notes for you. Do not type them.
+- Run everything as `root`.
+
+> **Run on: tags used in this guide**
+>
+> - **node1** = only the first VM
+> - **node2** = only the second VM
+> - **both nodes** = run the same command on each VM, one after the other
+
+## Prerequisites
+
+- The working VM from guide 01 (this becomes `node1`)
+- Internet working on `eth0` (`ping -c 4 8.8.8.8` replies)
+- About 20 GB free disk on the Windows host for the second VM
+- 2 GB RAM per VM (4 GB recommended)
 
 ---
 
-## Part A - Prepare Node 1
+# Part A - Prepare node1 (before cloning)
 
-We install all necessary software on `node1` first. Then, we clone it to create `node2`. This approach saves time and ensures consistency.
+We install everything on `node1` **first**, then clone it. This way you install only once.
 
-### Step 1 - Verify Connectivity
+## Step 1 - Check the Internet
 
-Run on: `node1`
+**Run on: node1**
 
 ```bash
 ping -c 4 8.8.8.8
 ```
 
-Ensure you receive replies. If not, resolve network issues before proceeding.
+You must get replies. If not, fix guide 01 first.
 
-### Step 2 - Update System Packages
+## Step 2 - Update the System
 
-Run on: `node1`
+**Run on: node1**
 
 ```bash
 dnf update -y
 ```
 
-### Step 3 - Enable High Availability Repository
+This may take a few minutes.
 
-Pacemaker is not included in the default repositories. It resides in the specialized `highavailability` repo.
+## Step 3 - Enable the High Availability Repository
 
-Run on: `node1`
+Pacemaker is not in the default repositories. It lives in a separate one called **HighAvailability**.
+
+**Run on: node1**
+
+Install the tool that manages repositories:
 
 ```bash
-# Install the repository management plugin
 dnf install -y dnf-plugins-core
+```
 
-# Enable the HA repository
+Enable the repository:
+
+```bash
 dnf config-manager --set-enabled highavailability
+```
 
-# Verify the repo is enabled
+Check that it is enabled:
+
+```bash
 dnf repolist
 ```
 
-Look for `highavailability` in the output. If missing, find the exact name using `dnf repolist --all | grep -i high` and use that identifier in the `--set-enabled` command.
+Expected: a line containing `highavailability` in the list.
 
-### Step 4 - Install Pacemaker and Tools
+> **Not listed?** Find the exact name with `dnf repolist --all | grep -i high`, then use that name in the `--set-enabled` command.
 
-Run on: `node1`
+## Step 4 - Install Pacemaker
+
+**Run on: node1**
 
 ```bash
 dnf install -y pacemaker pcs
 ```
 
-This command automatically installs `corosync`, the underlying communication daemon.
+This also installs `corosync` automatically.
 
-### Step 5 - Install Web Server
+## Step 5 - Install the Web Server
 
-We will use Apache (`httpd`) as the service protected by the cluster.
+We use Apache (`httpd`) as the service the cluster will protect.
 
-Run on: `node1`
+**Run on: node1**
 
 ```bash
 dnf install -y httpd
 ```
 
-**Critical:** Do **not** start Apache manually. Pacemaker must exclusively control the service lifecycle. Starting it manually causes conflicts. Ensure it does not auto-start at boot:
+> **Important:** do **not** start or enable `httpd` yourself. Pacemaker must be the only one that starts and stops it. If you start it manually, the cluster will get confused.
+
+Make sure it will not start at boot:
 
 ```bash
 systemctl disable httpd
 ```
 
-### Step 6 - Configure Firewall
+## Step 6 - Open the Firewall
 
-Nodes must communicate with each other, and the web server requires port 80 access.
+The nodes need to talk to each other, and the web server needs port 80.
 
-Run on: `node1`
+**Run on: node1**
+
+Allow cluster traffic:
 
 ```bash
-# Allow cluster communication traffic
 firewall-cmd --permanent --add-service=high-availability
+```
 
-# Allow HTTP web traffic
+Allow web traffic:
+
+```bash
 firewall-cmd --permanent --add-service=http
+```
 
-# Apply changes immediately
+Apply the changes:
+
+```bash
 firewall-cmd --reload
+```
 
-# Verify allowed services
+Check:
+
+```bash
 firewall-cmd --list-services
 ```
 
-Confirm that `high-availability` and `http` appear in the list.
+Expected: the list includes `high-availability` and `http`.
 
-### Step 7 - Start PCS Daemon
+## Step 7 - Start the pcs Service
 
-`pcsd` is the helper service enabling remote cluster management.
+`pcsd` is the helper service that lets the nodes be managed together.
 
-Run on: `node1`
+**Run on: node1**
 
 ```bash
 systemctl enable --now pcsd
+```
+
+Check that it is running:
+
+```bash
 systemctl status pcsd
 ```
 
-The status should indicate `active (running)`. Press `q` to exit the status view.
+Look for `active (running)`. Press `q` to leave the screen.
 
 ---
 
-## Part B - Create Node 2
+# Part B - Create node2 and Name the Nodes
 
-### Step 8 - Clone Node 1
+## Step 8 - Clone node1 into node2
 
-Run on: `node1`
+**Run on: node1**
 
-Shut down the VM:
+Shut the VM down:
+
 ```bash
 poweroff
 ```
 
-In Hyper-V Manager on Windows:
-1. Right-click `node1` → **Export...** → Select a destination folder.
-2. Wait for the export to complete.
-3. Click **Import Virtual Machine...** → Next.
-4. Select the exported folder → Next → Choose VM → Next.
-5. Select **Copy the virtual machine (create a new unique ID)** → Next.
-6. Finish the import. Rename the new VM to `node2`.
+Then in **Hyper-V Manager** on Windows:
 
-**Network Adapter Check:**
-Ensure `node2`'s adapters match `node1`:
-- Adapter 1: `Default Switch` (maps to `eth0`)
-- Adapter 2: `vSwitch-Internal` (maps to `eth1`)
+1. Right-click `node1` VM → **Export…** → choose a folder (for example `C:\HyperV-Export`) → **Export**.
+2. Wait until it finishes.
+3. In the right-hand menu click **Import Virtual Machine…** → **Next**.
+4. Select the exported folder → **Next** → choose the VM → **Next**.
+5. Choose **Copy the virtual machine (create a new unique ID)** → **Next**.
+6. Keep the default folders → **Next** → **Finish**.
+7. Rename the imported VM to `node2` (right-click → **Rename**).
+8. Check the two network adapters on `node2` (Settings → Network Adapter). Order must be the same as `node1`:
+   - first adapter = `Default Switch` (becomes `eth0`)
+   - second adapter = `vSwitch-Internal` (becomes `eth1`)
 
-*Note:* If static MAC addresses were configured on `node1`, change them on `node2` to avoid network conflicts.
+> **Same MAC address warning:** if you set a fixed MAC address on `node1`'s adapters earlier, change it on `node2` (Settings → Network Adapter → Advanced Features → MAC address). Two machines must never share a MAC address.
 
-Start both VMs.
+Now **start both VMs**.
 
-### Step 9 - Configure Node 2 Identity
+## Step 9 - Give node2 Its Own Identity
 
-The clone retains `node1`'s IP and hostname. We must differentiate `node2`.
+The clone is an exact copy, so it has `node1`'s IP and ID. Fix that on `node2`.
 
-Run on: `node2` (via Hyper-V console, not SSH)
+> **Do this on the Hyper-V console of `node2`**, not over SSH. Do **not** do it on `node1`.
+
+**Run on: node2**
+
+Set the hostname:
 
 ```bash
-# Set unique hostname
 hostnamectl set-hostname node2
+```
 
-# Assign unique internal IP
+Change the internal IP (`eth1`) to a different address:
+
+```bash
 nmcli connection modify eth1 ipv4.addresses 10.10.10.102/24
+```
+
+Apply the change:
+
+```bash
 nmcli connection down eth1
+```
+
+```bash
 nmcli connection up eth1
+```
 
-# Generate a new Machine ID (critical for clones)
+Generate a new unique machine ID (the clone has the same one as `node1`):
+
+```bash
 rm -f /etc/machine-id
-systemd-machine-id-setup
+```
 
-# Reboot to apply changes
+```bash
+systemd-machine-id-setup
+```
+
+Restart the VM:
+
+```bash
 reboot
 ```
 
-After reboot, verify:
+After it restarts, verify on `node2`:
+
 ```bash
-hostname      # Should return 'node2'
-ip -br a      # eth1 should show 10.10.10.102
+hostname
 ```
 
-### Step 10 - Name Node 1
+Expected: `node2`
 
-Run on: `node1`
+```bash
+ip -br a
+```
+
+Expected: `eth1` shows `10.10.10.102/24`, and `eth0` shows a `172.x.x.x` address.
+
+> **Note:** fixing the machine ID is important because cloned VMs should not share the same machine identity.  
+> However, in this lab, the machine ID was **not** the main cause of the later Corosync communication failure.  
+> If Corosync cannot contact the other node, see **Step 17A**.
+
+## Step 10 - Name node1
+
+**Run on: node1**
 
 ```bash
 hostnamectl set-hostname node1
 ```
 
-### Step 11 - Map Hostnames
+Check:
 
-Clusters rely on names, not IPs. We define these mappings in `/etc/hosts`.
+```bash
+hostname
+```
 
-Run on: **both nodes**
+Expected: `node1`
+
+## Step 11 - Let the Nodes Find Each Other by Name
+
+The cluster uses names, not IPs. We teach both VMs the names using the `/etc/hosts` file.
+
+**Run on: both nodes** (repeat all three commands on `node1`, then on `node2`)
 
 ```bash
 echo "10.10.10.101 node1" >> /etc/hosts
+```
+
+```bash
 echo "10.10.10.102 node2" >> /etc/hosts
 ```
 
-Verify:
+Check the file:
+
 ```bash
 cat /etc/hosts
 ```
 
-*Warning:* Execute these commands only once per node. Duplicate entries can cause confusion.
+Expected: the last two lines show `node1` and `node2` with their IPs.
 
-### Step 12 - Test Inter-Node Connectivity
+> **Only run the `echo` commands once per node.** Running them twice adds duplicate lines. If that happens, open the file with `vi /etc/hosts` and delete the extras.
 
-Run on: `node1`
+## Step 12 - Test the Connection Between Nodes
+
+**Run on: node1**
+
 ```bash
 ping -c 3 node2
 ```
 
-Run on: `node2`
+**Run on: node2**
+
 ```bash
 ping -c 3 node1
 ```
 
-Both must succeed. If they fail, recheck firewall rules (Step 6) and network adapter settings (Step 8).
+Both must show replies. If not, check `ip -br a`, the firewall, and that both VMs use the same `vSwitch-Internal` switch.
 
 ---
 
-## Part C - Build the Cluster
+# Part C - Build the Cluster
 
-### Step 13 - Set Cluster User Password
+## Step 13 - Set the Cluster User Password
 
-Pacemaker uses the `hacluster` user for inter-node authentication.
+The package created a special user called `hacluster`. The nodes use it to trust each other.
 
-Run on: **both nodes**
+**Run on: both nodes**
 
 ```bash
 passwd hacluster
 ```
 
-Use the **same strong password** on both nodes. Record it securely.
+Type a password twice (you will not see it while typing). **Use the exact same password on both nodes.** Write it down.
 
-### Step 14 - Authenticate Nodes
+## Step 14 - Make the Nodes Trust Each Other
 
-Establish trust between `node1` and `node2`.
-
-Run on: `node1`
+**Run on: node1 only**
 
 ```bash
 pcs host auth node1 node2 -u hacluster
 ```
 
-Enter the `hacluster` password when prompted. Expected output:
-```text
+Enter the `hacluster` password when asked.
+
+Expected:
+
+```
 node1: Authorized
 node2: Authorized
 ```
 
-> **Common Pitfall: HTTP 400 Error**
-> If you encounter `HTTP error: 400` or "Unable to connect," it usually means `pcsd` is not running on one of the nodes, or the firewall is blocking cluster traffic.
-> **Fix:** Ensure `systemctl status pcsd` shows `active (running)` on **both** nodes, and verify `firewall-cmd --list-services` includes `high-availability` on **both** nodes.
+## Step 15 - Create the Cluster
 
-### Step 15 - Create Cluster
-
-Initialize the cluster configuration.
-
-Run on: `node1`
+**Run on: node1 only**
 
 ```bash
 pcs cluster setup webcluster node1 node2
 ```
 
-Expected success message: `Cluster has been successfully set up.`
+This creates a cluster named `webcluster`. Expected last line: `Cluster has been successfully set up.`
 
-> **Common Pitfall: Leftover Configuration Files**
-> If this step fails stating that configuration already exists, previous attempts left residual files.
-> **Fix:** Run `pcs cluster destroy --all` on `node1` to wipe configurations from both nodes completely, then retry Step 15.
+## Step 16 - Start the Cluster
 
-### Step 16 - Start Cluster
+**Run on: node1 only**
 
-Activate the cluster services.
-
-Run on: `node1`
+Start the cluster on both nodes:
 
 ```bash
-# Start services on all nodes
 pcs cluster start --all
+```
 
-# Enable auto-start on boot
+Make it start automatically at boot:
+
+```bash
 pcs cluster enable --all
 ```
 
-### Step 17 - Check Status
+## Step 17 - Check the Cluster Status
 
-Verify the cluster health.
-
-Run on: `node1`
+**Run on: node1**
 
 ```bash
 pcs status
 ```
 
-Look for:
-```text
+Look for these lines:
+
+```
+Cluster name: webcluster
+...
 Node List:
   * Online: [ node1 node2 ]
 ```
 
-It may take ~20 seconds for both nodes to register as Online. Retry if necessary.
+Both nodes must say **Online**.
 
-### Step 18 - Disable Fencing (Lab Environment Only)
+> It can take about 20 seconds for both nodes to appear. Wait and run `pcs status` again.
 
-Production clusters require fencing (STONITH) to prevent split-brain scenarios. Our lab VMs lack hardware fencing capabilities, so we disable this requirement.
+## Step 17A - Known Clone Issue: Corosync Cannot Parse Node Address
 
-Run on: `node1`
+Use this step if one node stays **OFFLINE**, **UNCLEAN**, or Corosync logs show errors like:
+
+```text
+failed to parse node address 'node1'
+```
+
+or:
+
+```text
+[KNET] host: host: 1 has no active links
+```
+
+In this lab, the problem was caused by `/etc/corosync/corosync.conf` using hostnames for `ring0_addr` instead of the fixed cluster IP addresses.
+
+**Run on: node2**  
+(or run on whichever node cannot see the other node)
+
+Check the Corosync node list:
+
+```bash
+grep -A 10 nodelist /etc/corosync/corosync.conf
+```
+
+If you see something like this:
+
+```text
+nodelist {
+    node {
+        ring0_addr: node1
+        name: node1
+        nodeid: 1
+    }
+
+    node {
+        ring0_addr: node2
+        name: node2
+        nodeid: 2
+    }
+}
+```
+
+Edit the file:
+
+```bash
+nano /etc/corosync/corosync.conf
+```
+
+Change the `ring0_addr` values to the fixed internal cluster IPs:
+
+```text
+nodelist {
+    node {
+        ring0_addr: 10.10.10.101
+        name: node1
+        nodeid: 1
+    }
+
+    node {
+        ring0_addr: 10.10.10.102
+        name: node2
+        nodeid: 2
+    }
+}
+```
+
+Restart the cluster on the affected node:
+
+```bash
+pcs cluster stop
+```
+
+```bash
+pcs cluster start
+```
+
+If needed, restart the whole cluster from `node1`:
+
+```bash
+pcs cluster stop --all
+```
+
+```bash
+pcs cluster start --all
+```
+
+Verify:
+
+```bash
+pcs status
+```
+
+Expected:
+
+```text
+Online: [ node1 node2 ]
+partition with quorum
+```
+
+> **Why this matters:** Corosync should use stable IP addresses for the cluster ring. Hostnames can fail if DNS/hosts resolution differs between nodes or after cloning. The machine-id fix is still recommended for cloned VMs, but it was **not** the cause of this Corosync failure.
+
+## Step 18 - Turn Off Fencing (Lab Only)
+
+By default Pacemaker refuses to run resources without a fencing device. Real servers need fencing; our lab VMs do not have one.
+
+**Run on: node1 only**
 
 ```bash
 pcs property set stonith-enabled=false
 ```
 
-Verify:
+Check:
+
 ```bash
 pcs property config
 ```
 
-*Note:* Never disable fencing in production environments.
+Expected: `stonith-enabled: false`
 
-> **Common Pitfall: Resources Won't Start Due to STONITH Warnings**
-> If resources remain stopped with messages about "STONITH required," you skipped this step.
-> **Fix:** Run `pcs property set stonith-enabled=false` to allow resources to start without a fence device.
+> **Never do this on a real production cluster.** Fencing protects your data from two nodes writing to it at once. You will turn it back on and test it in Part G.
 
 ---
 
-## Part D - Add Resources
+# Part D - Add the Resources
 
-Resources are the components the cluster manages. Here, we deploy a Floating IP and a Web Server.
+## Step 19 - Create the Floating IP
 
-### Step 19 - Create Floating IP
+This IP is not tied to one machine. Pacemaker puts it on whichever node is healthy.
 
-This IP (`10.10.10.200`) is not bound to a specific NIC. Pacemaker assigns it to the active node.
-
-Run on: `node1`
+**Run on: node1 only**
 
 ```bash
-pcs resource create VirtualIP ocf:heartbeat:IPaddr2 \
-  ip=10.10.10.200 \
-  cidr_netmask=24 \
-  nic=eth1 \
-  op monitor interval=30s
+pcs resource create VirtualIP ocf:heartbeat:IPaddr2 ip=10.10.10.200 cidr_netmask=24 nic=eth1 op monitor interval=30s
 ```
 
-| Parameter | Description |
+| Part | Meaning |
 |---|---|
-| `VirtualIP` | Resource name. |
-| `ocf:heartbeat:IPaddr2` | Script handling IP assignment/removal. |
-| `ip=...` | The floating IP address. |
-| `nic=eth1` | Interface where the IP is attached. |
-| `op monitor interval=30s` | Health check frequency. |
+| `VirtualIP` | The name we give the resource |
+| `ocf:heartbeat:IPaddr2` | The "resource agent" (script) that adds/removes an IP |
+| `ip=10.10.10.200` | The floating IP |
+| `cidr_netmask=24` | Same as `255.255.255.0` |
+| `nic=eth1` | Put the IP on the internal adapter |
+| `op monitor interval=30s` | Check every 30 seconds that it is still working |
 
-### Step 20 - Create Web Server Resource
-
-Run on: `node1`
+Check:
 
 ```bash
-pcs resource create WebServer systemd:httpd \
-  op monitor interval=30s
+pcs status
 ```
 
-This instructs Pacemaker to manage the standard `httpd` service.
+Expected: `VirtualIP (ocf:heartbeat:IPaddr2): Started node1` (or `node2`).
 
-### Step 21 - Group Resources
+## Step 20 - Create the Web Server Resource
 
-A group ensures resources run together on the same node and start in a specific order.
+**Run on: node1 only**
 
-Run on: `node1`
+```bash
+pcs resource create WebServer systemd:httpd op monitor interval=30s
+```
+
+`systemd:httpd` means "manage the normal `httpd` service".
+
+## Step 21 - Group the Two Resources
+
+A group keeps resources together on the same node and starts them in order (IP first, then web server).
+
+**Run on: node1 only**
 
 ```bash
 pcs resource group add WebGroup VirtualIP WebServer
 ```
 
-Check status:
+Check:
+
 ```bash
 pcs status
 ```
 
-You should see:
-```text
+Expected:
+
+```
 Resource Group: WebGroup
-  * VirtualIP ... Started node1
-  * WebServer ... Started node1
+  * VirtualIP (ocf:heartbeat:IPaddr2): Started node1
+  * WebServer (systemd:httpd): Started node1
 ```
 
-### Step 22 - Create Test Content
+Both must say **Started** on the **same node**.
 
-Differentiate the nodes visually to observe failover.
+## Step 22 - Create a Test Web Page
 
-Run on: `node1`
+Each node shows a different message, so you can see which node is answering.
+
+**Run on: node1**
+
 ```bash
 echo "Hello from node1" > /var/www/html/index.html
 ```
 
-Run on: `node2`
+**Run on: node2**
+
 ```bash
 echo "Hello from node2" > /var/www/html/index.html
 ```
 
-### Step 23 - Verify Access
+## Step 23 - Test from Windows
 
-Open a browser on the Windows host and navigate to:
-```text
+On your **Windows PC** open a browser and go to:
+
+```
 http://10.10.10.200
 ```
 
-You should see the message from the active node (e.g., `Hello from node1`).
+You should see the message of the node that currently runs the resources (for example `Hello from node1`).
+
+You can also test from Windows Command Prompt:
+
+```
+curl http://10.10.10.200
+```
 
 ---
 
-## Part E - Testing Failover
+# Part E - Break Things and Watch the Cluster React
 
-Keep the browser tab open. Refresh after each test to observe changes.
+Keep a browser tab open on `http://10.10.10.200` and refresh it after each test. Use `pcs status` to watch.
 
-### Test 1: Standby Mode
+## Test 1 - Move Everything to the Other Node (Standby)
 
-Standby places a node in maintenance mode; it stops accepting new resources but keeps existing ones until moved.
+Standby tells a node "do not run any resources".
 
-Run on: `node1` (assuming it holds resources)
+**Run on: node1**
+
+Find which node is running the resources:
 
 ```bash
-# Place node1 in standby
-pcs node standby node1
-
-# Check status
 pcs status
 ```
 
-Refresh the browser. You should now see `Hello from node2`. The resources migrated automatically.
+Say it is `node1`. Put it in standby:
 
-To restore `node1`:
+```bash
+pcs node standby node1
+```
+
+Check:
+
+```bash
+pcs status
+```
+
+Expected: `node1` is `standby`, and `WebGroup` is now **Started node2**. Refresh the browser: it now says `Hello from node2`.
+
+Bring `node1` back:
+
 ```bash
 pcs node unstandby node1
 ```
-*Note:* Resources typically stay on `node2` unless forced back. This prevents unnecessary disruption.
 
-### Test 2: Simulated Crash
+> The resources stay on `node2`. Pacemaker does not move them back unless told to. This is normal and avoids needless downtime.
 
-Force a hard power failure.
+## Test 2 - Crash a Node
 
-1. Identify the active node via `pcs status` (e.g., `node2`).
-2. In Hyper-V Manager, right-click `node2` → **Turn Off**.
-3. On `node1`, wait 10–30 seconds and run:
-   ```bash
-   pcs status
-   ```
-4. Confirm `node2` is OFFLINE and resources started on `node1`.
-5. Refresh browser: `Hello from node1`.
+Simulate a power failure.
 
-Restart `node2` in Hyper-V. It rejoins the cluster automatically due to the earlier `enable --all` setting.
+Find the node that runs the resources (`pcs status`). In **Hyper-V Manager**, right-click that VM → **Turn Off** (not Shut Down).
 
-### Test 3: Service Failure
+On the **other** node run:
 
-Pacemaker monitors services and restarts them if they fail.
+```bash
+pcs status
+```
 
-Run on the active node:
+Expected after about 10-30 seconds:
+
+- The dead node shows as **OFFLINE**.
+- `WebGroup` is **Started** on the surviving node.
+- The browser page still works, showing the surviving node's message.
+
+Start the powered-off VM again. Because you ran `pcs cluster enable --all`, it rejoins the cluster by itself. Check with `pcs status`.
+
+## Test 3 - Crash Only the Web Server
+
+Pacemaker checks the service every 30 seconds and repairs it.
+
+**Run on: the node that runs the resources**
+
 ```bash
 systemctl stop httpd
 ```
 
-Wait 30–60 seconds. Run `pcs status`. Pacemaker detects the outage and restarts the service. Clear any historical error logs:
+Now watch:
+
+```bash
+pcs status
+```
+
+Run it again after 30-60 seconds. Pacemaker notices the service is down and restarts it. You may see a `Failed Resource Actions` section.
+
+Clear the old failure message:
+
 ```bash
 pcs resource cleanup
 ```
 
+## Test 4 - Move a Resource Manually
+
+**Run on: any node**
+
+```bash
+pcs resource move WebGroup node2
+```
+
+Check:
+
+```bash
+pcs status
+```
+
+Remove the manual preference afterwards, so Pacemaker is free to decide again:
+
+```bash
+pcs resource clear WebGroup
+```
+
 ---
 
-## Part F - Understanding Constraints (Advanced)
+# Part F - Constraints (Replace the Group)
 
-Groups simplify configuration, but constraints are the underlying logic. Let's deconstruct the group to see how Pacemaker thinks.
+A group is a shortcut. **Constraints** are the full set of rules behind it. Here we remove the group and rebuild the same behaviour rule by rule, so you can see how Pacemaker decides.
 
-| Constraint Type | Purpose | Example Rule |
+| Rule type | Question it answers | Our rule |
 |---|---|---|
-| **Colocation** | Forces resources to run on the same node. | WebServer runs WITH VirtualIP |
-| **Ordering** | Dictates startup sequence. | Start VirtualIP THEN WebServer |
-| **Location** | Preferences for specific nodes. | Prefer node1 |
+| **Colocation** | Which resources must (or must not) run on the same node? | The web server runs with the IP |
+| **Ordering** | Which starts first? | IP first, then the web server |
+| **Location** | Which node is preferred? | Prefer `node1` |
 
-### Step 24 - Remove Group
+## Step 24 - Remove the Group
 
-Run on: `node1`
+Ungrouping removes the group only. Your two resources stay.
+
+**Run on: node1**
 
 ```bash
 pcs resource ungroup WebGroup
 ```
 
-Now `VirtualIP` and `WebServer` are independent. They might drift to different nodes.
+Check:
 
-### Step 25 - Add Colocation
+```bash
+pcs status
+```
 
-Force them to stay together.
+Expected: `VirtualIP` and `WebServer` are now listed separately. They may even be on different nodes now, because nothing links them any more.
+
+## Step 25 - Add the Colocation Rule
+
+"Run `WebServer` on the same node as `VirtualIP`."
+
+**Run on: node1**
 
 ```bash
 pcs constraint colocation add WebServer with VirtualIP INFINITY
 ```
 
-`INFINITY` implies "strictly always."
+`INFINITY` means "always, no exceptions".
 
-### Step 26 - Add Ordering
+## Step 26 - Add the Ordering Rule
 
-Ensure the IP exists before the web server binds to it.
+"Start `VirtualIP` first, then `WebServer`."
+
+**Run on: node1**
 
 ```bash
 pcs constraint order VirtualIP then WebServer
 ```
 
-### Step 27 - Add Location Preference
+## Step 27 - Add a Location Preference
 
-Prefer running on `node1`.
+"Prefer `node1` when it is healthy."
+
+**Run on: node1**
 
 ```bash
 pcs constraint location VirtualIP prefers node1=100
 ```
 
-Score `100` indicates a preference. Higher scores override lower ones.
+The number is a **score**. Higher means a stronger preference. `INFINITY` would mean "must", and a negative number would mean "avoid".
 
-### Step 28 - View Constraints
+## Step 28 - View the Constraints
+
+**Run on: node1**
 
 ```bash
 pcs constraint config
 ```
 
-### Step 29 - Test Behavior
+Expected: one colocation, one order and one location rule.
 
-1. Check status: Both should be on `node1`.
-2. Standby `node1`: `pcs node standby node1`.
-3. Check status: Both move to `node2` (colocation enforced).
-4. Unstandby `node1`: `pcs node unstandby node1`.
-5. Check status: They move **back** to `node1` (location preference honored).
+For the rule IDs (needed to delete a rule):
 
-*Optional Stickiness:*
-To prevent resources from moving back automatically, increase stickiness:
 ```bash
-pcs resource defaults update resource-stickiness=200
+pcs constraint config --full
 ```
-(Stickiness 200 > Preference 100 = Stay put).
+
+## Step 29 - Test the Rules
+
+**Run on: node1**
+
+Check where things run:
+
+```bash
+pcs status
+```
+
+`VirtualIP` and `WebServer` should both be on `node1` (your preference).
+
+Put `node1` in standby:
+
+```bash
+pcs node standby node1
+```
+
+```bash
+pcs status
+```
+
+Expected: both resources moved together to `node2`.
+
+Bring `node1` back:
+
+```bash
+pcs node unstandby node1
+```
+
+```bash
+pcs status
+```
+
+Expected: after a few seconds both resources **move back to `node1`**. With the group they stayed on `node2`. The difference is your location preference (score 100).
+
+> **Optional - make resources "sticky":** to stop the move-back, give resources a stickiness score higher than your preference:
+>
+> ```bash
+> pcs resource defaults update resource-stickiness=200
+> ```
+>
+> Pacemaker adds the scores up. 200 (stay here) beats 100 (prefer node1), so resources stay put. To undo it, run `pcs resource defaults update resource-stickiness=0`.
+>
+> The `update` syntax is for newer `pcs` versions. If the command is rejected, check `pcs resource defaults --help`.
+
+## Step 30 - Remove a Constraint and See What Changes
+
+Take the IDs from `pcs constraint config --full`, then delete the colocation rule:
+
+```bash
+pcs constraint delete ID_OF_THE_COLOCATION_RULE
+```
+
+Now put the node running the resources in standby and back, and watch `pcs status`. Without the colocation rule, the two resources can end up on different nodes. Add the rule back afterwards (Step 25).
 
 ---
 
-## Part G - Fencing (Conceptual)
+# Part G - Fencing (STONITH)
 
-*Note: This section explains the necessity of fencing in production. We disabled it earlier for the lab.*
+> **Read this first.** This part is a **learning exercise** with a fake fence device. It was written from documentation and has **not been tested on AlmaLinux 10**, so some command output may differ. Never use a fake fence device on a real cluster.
 
-### Why Fencing?
+## Step 31 - Why Fencing Exists
 
-If `node1` loses network connectivity but remains powered on, it believes it still owns the IP. If `node2` takes over the IP simultaneously, both nodes write to the same resource, causing **Split-Brain** and data corruption.
+If a node stops answering, Pacemaker cannot know if it **crashed** or is just **cut off from the network** but still running. If it is still running and Pacemaker starts the service on the other node too, both nodes use the same data at once (called **split-brain**) and can corrupt it.
 
-**Fencing** resolves this by forcibly powering off `node1` before `node2` assumes control.
+Fencing solves this: before taking over, the cluster **forcibly powers off** the silent node and only then moves the service.
 
-Methods include:
-- **Hardware:** IPMI/iLO/iDRAC (Physical servers).
-- **Hypervisor:** VMware/KVM APIs (Virtual machines).
-- **Storage:** SBD (Shared Block Device messaging).
+| Fence method | How it powers off the node | Where used |
+|---|---|---|
+| IPMI / iLO / iDRAC (`fence_ipmilan`) | Server management card | Physical servers |
+| Hypervisor (`fence_vmware_soap`, `fence_virsh`) | Asks the hypervisor to stop the VM | Virtual machines |
+| Smart power switch (`fence_apc`) | Cuts the power outlet | Physical servers |
+| SBD (storage or watchdog based) | Node reboots itself or is told to via a shared disk | VMs and shared-storage clusters |
+| Fake device (`fence_dummy`) | Does nothing real, only records "off" | **Lab learning only** |
 
-In our lab, we set `stonith-enabled=false` because we lack hardware fencing devices. **Do not skip fencing in production.**
+Hyper-V has no common ready-made fence agent for this lab, so we practice with the fake one.
+
+## Step 32 - Install and List the Fence Agents
+
+**Run on: both nodes**
+
+```bash
+dnf install -y fence-agents-all
+```
+
+**Run on: node1**
+
+List the available fence agents:
+
+```bash
+pcs stonith list
+```
+
+Scroll through it. These are the real fence methods from the table above.
+
+Check for the fake test agent:
+
+```bash
+pcs stonith list | grep -i dummy
+```
+
+- **A line with `fence_dummy` appears:** continue to Step 33.
+- **Nothing appears:** the test agent is not shipped on your system. You cannot do the hands-on test here. Read Steps 31 and 36, then skip to the checklist.
+
+## Step 33 - Create the Test Fence Device
+
+**Run on: node1 only**
+
+```bash
+pcs stonith create test-fence fence_dummy pcmk_host_list="node1 node2"
+```
+
+| Part | Meaning |
+|---|---|
+| `test-fence` | The name of the fence device |
+| `fence_dummy` | The fake agent (records "off" in a file, powers nothing off) |
+| `pcmk_host_list` | Nodes this device is allowed to fence |
+
+## Step 34 - Turn Fencing Back On
+
+**Run on: node1 only**
+
+```bash
+pcs property set stonith-enabled=true
+```
+
+Check:
+
+```bash
+pcs status
+```
+
+Expected: `test-fence (stonith:fence_dummy): Started node1` (or `node2`) under the resources, and the earlier resources still running.
+
+## Step 35 - Fence a Node by Hand
+
+**Run on: node1**
+
+Ask the cluster to fence `node2`:
+
+```bash
+pcs stonith fence node2
+```
+
+Check the result:
+
+```bash
+pcs status
+```
+
+```bash
+pcs stonith history
+```
+
+Expected: the history shows a fencing action against `node2`, and the cluster treats `node2` as down.
+
+**What to notice:** `node2` is **still running** in Hyper-V, because the fake device powers nothing off. A real device would have cut its power. This is exactly why real fencing needs a real device.
+
+**Recover the lab** (best effort):
+
+**Run on: node2**
+
+```bash
+pcs cluster stop
+```
+
+```bash
+pcs cluster start
+```
+
+**Run on: node1**
+
+```bash
+pcs resource cleanup
+```
+
+```bash
+pcs status
+```
+
+Expected: both nodes **Online** again. If node2 stays stuck, run `pcs cluster stop --all` then `pcs cluster start --all` on node1.
+
+## Step 36 - Go Back to the Lab Setup (Optional)
+
+To continue practising without fencing, turn it off again:
+
+**Run on: node1 only**
+
+```bash
+pcs property set stonith-enabled=false
+```
+
+Remember: **real clusters always keep fencing on**. Your next project is a real fence method, such as SBD with a shared disk, or a hypervisor-based agent if you move the lab to KVM/libvirt or VMware.
 
 ---
 
-## Command Cheat Sheet
+# Understanding What You Built
+
+| What happened | Who did it |
+|---|---|
+| Nodes noticed each other going up or down | **Corosync** |
+| Decided "run the IP and web server on node2" | **Pacemaker** |
+| Added the IP and started `httpd` | **Resource agents** |
+| Checked every 30 seconds that things still work | `op monitor` |
+| Kept IP and web server together | **Resource group** |
+
+Useful viewing commands:
+
+| Command | Shows |
+|---|---|
+| `pcs status` | Overall cluster, nodes, resources |
+| `pcs resource config` | How each resource is set up |
+| `pcs cluster status` | Cluster daemons' state |
+| `pcs quorum status` | Quorum (voting) information |
+| `corosync-cfgtool -s` | Network links between the nodes |
+
+## Why 2-node clusters are special
+
+Quorum needs a **majority**. With two nodes, one failing leaves 1 of 2, which is not a majority. `pcs cluster setup` automatically turns on a special "two node" mode so the survivor can continue. Real clusters usually use 3 or more nodes, or a fencing/quorum device.
+
+---
+
+# Command Cheat Sheet
 
 | Task | Command |
 |---|---|
-| Overall Status | `pcs status` |
-| Start/Stop Cluster | `pcs cluster start --all` / `stop --all` |
-| Node Maintenance | `pcs node standby <name>` / `unstandby <name>` |
-| Move Resource | `pcs resource move <resource> <node>` |
-| Clear Move Pref | `pcs resource clear <resource>` |
-| Reset Errors | `pcs resource cleanup` |
-| Show Constraints | `pcs constraint config` |
-| Delete Constraint | `pcs constraint delete <ID>` |
-| Toggle Fencing | `pcs property set stonith-enabled=true/false` |
+| See everything | `pcs status` |
+| Start / stop cluster on all nodes | `pcs cluster start --all` / `pcs cluster stop --all` |
+| Stop cluster on this node only | `pcs cluster stop` |
+| Put node in standby / out | `pcs node standby node1` / `pcs node unstandby node1` |
+| Move a group | `pcs resource move WebGroup node2` |
+| Remove the move preference | `pcs resource clear WebGroup` |
+| Clear failure messages | `pcs resource cleanup` |
+| Disable / enable a resource | `pcs resource disable WebServer` / `pcs resource enable WebServer` |
+| Delete a resource | `pcs resource delete WebServer` |
+| Show constraints (with IDs) | `pcs constraint config --full` |
+| Delete a constraint | `pcs constraint delete ID` |
+| List fence agents | `pcs stonith list` |
+| Fence a node manually | `pcs stonith fence node2` |
+| Fencing history | `pcs stonith history` |
+| Fencing on / off | `pcs property set stonith-enabled=true` / `false` |
 
 ---
 
-## Troubleshooting
+# Troubleshooting
 
-| Symptom | Likely Cause | Solution |
+| Problem | Likely cause | Fix |
 |---|---|---|
-| `dnf install pacemaker` fails | HA Repo not enabled | Re-execute Step 3. Verify `dnf repolist`. |
-| `pcs cluster setup` fails | Leftover config files | Run `pcs cluster destroy --all` on `node1`, then retry Step 15. |
-| `pcs host auth` returns HTTP 400 | `pcsd` not running or firewall blocked | Ensure `systemctl status pcsd` is active on **both** nodes. Verify `high-availability` is allowed in firewall on **both** nodes. |
-| Nodes cannot ping by name | Missing `/etc/hosts` entries | Re-execute Step 11. Ensure no duplicate lines exist. |
-| Resources stuck in "Stopped" | STONITH/Fencing enabled | Run `pcs property set stonith-enabled=false` (Step 18). |
-| WebServer shows "Failed" | Manual start conflict | Ensure `systemctl disable httpd` was run (Step 5). Run `pcs resource cleanup`. |
-| Browser hangs on Floating IP | Firewall blocking HTTP | Verify `http` is allowed in firewall (Step 6). |
-| Duplicate IPs/MACs | Cloning artifact | Regenerate Machine ID on `node2` (Step 9). Check Hyper-V MAC addresses. |
+| `dnf install pacemaker pcs` says "no match" | HA repository not enabled | Redo Step 3 |
+| `pcs host auth` fails | `pcsd` not running, wrong password, or firewall | `systemctl status pcsd`; check Step 6 and Step 13 |
+| `node2: Unable to connect` | Names not resolving or firewall blocking | Redo Steps 11 and 12 |
+| Only one node is **Online** | Other node not started | On that node: `pcs cluster start` |
+| Node stays `UNCLEAN` or `pending` | Network between nodes broken | `ping node1` / `ping node2`; check `eth1` |
+| Resources show `Stopped` | Fencing still on, or earlier failure | Redo Step 18, then `pcs resource cleanup` |
+| `WebServer` shows `Failed` | `httpd` was started manually, or the config is wrong | `systemctl stop httpd`, run `pcs resource cleanup` |
+| Browser cannot open `10.10.10.200` | Wrong node group state or firewall | `pcs status` shows resources Started; check Step 6 (`http`) |
+| Both nodes show the same `172.x` on `eth0` | Duplicate machine ID/MAC from clone | Redo Step 9 (machine ID) and check MAC in Hyper-V |
+| Everything stopped after reboot | Cluster not enabled at boot | `pcs cluster enable --all` |
+| Resources land on different nodes after Part F | Colocation rule missing | Redo Step 25 and check `pcs constraint config` |
+| Resources stop after turning fencing on | No working fence device | Check `pcs status` for `test-fence`; redo Step 33, or set `stonith-enabled=false` |
+| `fence_dummy` not in `pcs stonith list` | Agent not shipped on this system | Skip the hands-on fencing test (Step 32) |
+| **Corosync error: `failed to parse node address` or `no active links`** | **Cloned VM has hostname instead of IP in `corosync.conf`** | **See Step 17A. Edit `/etc/corosync/corosync.conf`, set `ring0_addr` to `10.10.10.101` and `10.10.10.102`, then restart the cluster.** |
+
+## Start Over (Delete the Cluster)
+
+If you want to rebuild from scratch:
+
+**Run on: node1 only**
+
+```bash
+pcs cluster destroy --all
+```
+
+Then go back to **Step 13** (the `hacluster` password stays) and continue.
 
 ---
 
-## Checklist
+# Checklist
 
-- [ ] HA Repo enabled, Pacemaker installed.
-- [ ] `httpd` installed but **disabled** from auto-start.
-- [ ] Firewall allows `high-availability` and `http`.
-- [ ] `node2` cloned with unique IP, Hostname, and Machine-ID.
-- [ ] Nodes can ping each other by name.
-- [ ] `pcs host auth` successful (no HTTP 400 errors).
-- [ ] Cluster created and started (no leftover config errors).
-- [ ] Fencing disabled (`stonith-enabled=false`).
-- [ ] Resources grouped and running.
-- [ ] `http://10.10.10.200` accessible from Windows.
-- [ ] Failover tested (Standby and Power-off).
-- [ ] Constraints understood (Colocation, Order, Location).
+- [ ] HighAvailability repository enabled, `pacemaker` and `pcs` installed
+- [ ] `httpd` installed but **not** enabled or started by hand
+- [ ] Firewall allows `high-availability` and `http`
+- [ ] `node2` cloned, with hostname `node2` and IP `10.10.10.102`
+- [ ] `node1` and `node2` can ping each other by name
+- [ ] `pcs host auth` shows both nodes **Authorized**
+- [ ] `pcs status` shows both nodes **Online**
+- [ ] If Corosync failed, checked `/etc/corosync/corosync.conf` and used cluster IPs in `ring0_addr`
+- [ ] `stonith-enabled` is `false` (lab only)
+- [ ] `WebGroup` is **Started** on one node
+- [ ] `http://10.10.10.200` works from Windows
+- [ ] Standby test moved the service to the other node
+- [ ] Power-off test failed over automatically
+- [ ] `httpd` stop test was repaired by Pacemaker
+- [ ] Group removed and rebuilt with colocation, order and location constraints
+- [ ] Resources move back to `node1` after standby (location preference works)
+- [ ] Fake fence device created and `pcs stonith fence node2` recorded in history (or Part G read and understood)
+- [ ] You can explain why real clusters must keep fencing enabled
+
+## What to Learn Next - (what we can add next)
+
+1. **Real fencing**: SBD with a shared disk, or a hypervisor fence agent (KVM/libvirt or VMware).
+2. **A third node** or a quorum device.
+3. **Shared storage**: DRBD or a shared disk for databases.
+4. **Load balancing**: HAProxy on the floating IP with two web servers behind it, kept alive by Pacemaker.
