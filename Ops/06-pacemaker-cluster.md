@@ -1,5 +1,4 @@
-# 06 - Simple Pacemaker Cluster (AlmaLinux 10) - Beginner Edition
-
+# 06 - Simple Pacemaker Cluster
 > **Prerequisite:** [01 - Hyper-V VM Setup](01-hyperv-vm-setup.md) completed (one working VM with `eth0` internet and `eth1` = `10.10.10.101`).
 
 ## Overview
