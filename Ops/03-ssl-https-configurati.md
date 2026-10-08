@@ -255,6 +255,6 @@ For more documentation on creating self-signed certificates, I followed this gui
 
 - Linuxize: [Creating a Self-Signed SSL Certificate](https://linuxize.com/post/creating-a-self-signed-ssl-certificate/)
 
-> **Note:** The linked guide uses basic `openssl` commands. Our implementation adds specific flags (`-addext`) and AlmaLinux-specific path configurations to ensure compatibility with modern browsers and SELinux.
+> **Note:** The linked guide uses basic `openssl` commands. This implementation is AlmaLinux-specific path configurations to ensure compatibility with modern browsers and SELinux.
 
 **Next:** [04 - Security Hardening](04-security-hardening.md)
