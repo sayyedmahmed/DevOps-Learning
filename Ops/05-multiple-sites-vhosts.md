@@ -631,13 +631,3 @@ restorecon -Rv /var/www/html
 - [ ] Step 9 only used if the default SSL vhost is actually stealing requests
 
 ---
-
-## References
-
-For more documentation, I followed these links:
-
-- Apache HTTP Server: [Virtual Hosts](https://httpd.apache.org/docs/2.4/vhosts/)
-- Previous lab guides:
-  - [02 - LAMP & WordPress](02-lamp-wordpress-installation.md)
-  - [03 - SSL & HTTPS](03-ssl-https-configuration.md)
-  - [04 - Security Hardening](04-security-hardening.md)
