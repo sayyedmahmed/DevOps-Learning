@@ -4,29 +4,32 @@
 
 ## Overview
 
-This guide secures the site with **HTTPS** using a **self-signed certificate** that includes a **Subject Alternative Name (SAN)** for the VM's IP address.
+This guide secures the site with **HTTPS** using a **self-signed certificate**. We will generate the key and certificate, configure Apache to use them, and redirect all HTTP traffic to HTTPS.
 
-### Why a SAN is required
+### Why Self-Signed?
 
-Modern browsers ignore the certificate's Common Name (CN) and only trust names listed in the SAN field. A certificate with only `CN=10.10.10.101` triggers a name-mismatch error even after you trust it. Adding `IP:10.10.10.101` as a SAN fixes this.
+A self-signed certificate encrypts traffic (just like a commercial one), but it is not verified by a trusted Certificate Authority (CA). Browsers will show a warning ("Not Secure") until you manually trust the certificate. This is perfect for a local lab or internal testing environment. For public production sites, you would use Let's Encrypt or a commercial CA.
 
-### Self-signed vs. trusted
+### Why SAN (Subject Alternative Name)?
 
-A self-signed certificate encrypts traffic but is not verified by a Certificate Authority, so browsers show a warning until you trust it manually. That is fine for a lab; production should use Let's Encrypt or a commercial CA.
+Modern browsers ignore the old `Common Name` field for validation. They only check the `Subject Alternative Name` (SAN). If we don't explicitly add the IP address (`10.10.10.101`) to the SAN, the browser will throw a name-mismatch error even if you try to proceed.
 
-**Prerequisites:** WordPress working over HTTP (Part 2), `mod_ssl` available. If `/etc/httpd/conf.d/ssl.conf` does not exist, install it first: `dnf install mod_ssl -y`.
+**Prerequisites:**
+- WordPress working over HTTP (from Part 2).
+- `mod_ssl` installed. Check with `rpm -q mod_ssl`. If missing, run: `dnf install mod_ssl -y`.
 
 ---
 
-## Step 1 - Reconstruct the Missing OpenSSL Config
+## Step 1 - Prepare OpenSSL Config (AlmaLinux Specific)
 
-Minimal AlmaLinux 10 does not ship `/etc/pki/tls/openssl.cnf`, which some OpenSSL commands expect.
+Minimal AlmaLinux installations sometimes lack the default `/etc/pki/tls/openssl.cnf` file required by certain OpenSSL commands. We create a minimal config that defers to the system-wide crypto policy.
 
 ```bash
 vi /etc/pki/tls/openssl.cnf
 ```
-Paste:
-```
+
+Paste the following content:
+```ini
 openssl_conf = default_modules
 
 [default_modules]
@@ -38,22 +41,35 @@ system_default = crypto_policy
 [crypto_policy]
 .include = /etc/crypto-policies/back-ends/opensslcnf.config
 ```
-Save with `:wq`.
 
-This minimal config hands cipher and protocol decisions to the **system-wide crypto policy**, so OpenSSL follows the same rules as the rest of the OS.
+Save and exit (`:wq`).
 
-## Step 2 - Create a Working Directory
+### Why are we doing this?
+OpenSSL needs a configuration file to know which encryption standards to use. By pointing it to the system crypto policy, we ensure our certificates follow the same security rules as the rest of the OS, avoiding compatibility issues.
+
+---
+
+## Step 2 - Create Working Directory
 
 ```bash
 mkdir -p /opt/ssl
 cd /opt/ssl
 ```
-A neutral working area for generating the key and certificate before installing them.
 
-## Step 3 - Generate the Self-Signed Certificate with SAN
+### Why are we doing this?
+We keep temporary generation files in a neutral directory (`/opt/ssl`) before moving them to their final secure locations. This prevents cluttering system directories during creation.
+
+---
+
+## Step 3 - Generate Self-Signed Certificate with SAN
+
+Run this single command to generate both the private key and the certificate:
 
 ```bash
-openssl req -x509 -nodes -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 \
+openssl req -x509 -nodes -newkey rsa:2048 \
+  -keyout key.pem \
+  -out cert.pem \
+  -days 365 \
   -subj "/C=PK/ST=Punjab/L=Lahore/O=MyCompany/OU=IT/CN=10.10.10.101" \
   -addext "subjectAltName = IP:10.10.10.101" \
   -config /dev/null
@@ -61,73 +77,106 @@ openssl req -x509 -nodes -newkey rsa:2048 -keyout key.pem -out cert.pem -days 36
 
 | Option | Meaning |
 |---|---|
-| `req -x509` | Create a self-signed certificate directly |
-| `-nodes` | Do not encrypt the private key (Apache can start unattended) |
-| `-newkey rsa:2048` | Generate a new 2048-bit RSA key |
-| `-keyout` / `-out` | Output paths for key and certificate |
-| `-days 365` | Valid for one year |
-| `-subj` | Certificate identity (country, state, city, org, unit, CN) |
-| `-addext "subjectAltName = IP:..."` | Adds the SAN browsers require |
-| `-config /dev/null` | Ignore config files so no defaults interfere |
+| `-x509` | Outputs a self-signed certificate instead of a CSR. |
+| `-nodes` | No passphrase on the private key (allows Apache to start automatically). |
+| `-newkey rsa:2048` | Generates a new 2048-bit RSA key pair. |
+| `-days 365` | Certificate validity period. |
+| `-subj` | Defines the identity fields (Country, State, Org, etc.). |
+| `-addext "subjectAltName..."` | **Crucial:** Adds the IP address so browsers accept it. |
+| `-config /dev/null` | Ignores external config files to prevent errors. |
 
-**Verify:**
+**Verify the SAN was added correctly:**
 ```bash
-openssl x509 -in cert.pem -noout -subject -ext subjectAltName
+openssl x509 -in cert.pem -noout -text | grep -A1 "Subject Alternative Name"
 ```
-Expected SAN:
-```
-IP Address:10.10.10.101
+You should see:
+```text
+X509v3 Subject Alternative Name: 
+    IP Address:10.10.10.101
 ```
 
-## Step 4 - Install the Certificate and Key
+### Why are we doing this?
+This creates the cryptographic keys needed for HTTPS. The `-nodes` flag is important because if the key had a password, Apache would hang waiting for input every time it restarted. The SAN ensures modern browsers (Chrome, Edge, Firefox) recognize the IP address as valid.
+
+---
+
+## Step 4 - Install Certificate and Key
+
+Move the generated files to standard RHEL/AlmaLinux locations and secure them.
 
 ```bash
 cp /opt/ssl/cert.pem /etc/pki/tls/certs/cert.pem
 cp /opt/ssl/key.pem /etc/pki/tls/private/key.pem
+
+# Secure the private key (only root can read/write)
 chmod 600 /etc/pki/tls/private/key.pem
 chown root:root /etc/pki/tls/private/key.pem
 ```
 
-These are the standard RHEL-family locations, which also carry the correct SELinux labels. The key is made **readable by root only** (`600`) because anyone holding it can impersonate your server.
+### Why are we doing this?
+- **Locations:** `/etc/pki/tls/certs/` and `/etc/pki/tls/private/` are the standard paths expected by Apache and SELinux policies on AlmaLinux.
+- **Permissions:** The private key (`key.pem`) is the most sensitive file. If an attacker steals it, they can decrypt your traffic or impersonate your server. `600` ensures only the `root` user can access it.
 
-> **Never commit `key.pem` to GitHub.**
+---
 
-## Step 5 - Point Apache to the Certificate
+## Step 5 - Configure Apache for SSL
+
+Edit the SSL configuration file provided by `mod_ssl`.
 
 ```bash
 vi /etc/httpd/conf.d/ssl.conf
 ```
-Set:
-```
-SSLCertificateFile /etc/pki/tls/certs/cert.pem
-SSLCertificateKeyFile /etc/pki/tls/private/key.pem
+
+Find and update these lines to point to your new files:
+```apache
+SSLCertificateFile      /etc/pki/tls/certs/cert.pem
+SSLCertificateKeyFile   /etc/pki/tls/private/key.pem
 ```
 
-Test syntax, then restart:
+Test the configuration syntax before restarting:
 ```bash
 httpd -t
+```
+If it says `Syntax OK`, restart Apache:
+```bash
 systemctl restart httpd
 ```
-`httpd -t` should print `Syntax OK`. Always test before restarting to avoid taking the site down on a typo.
 
-## Step 6 - Verify the Served Certificate
+### Why are we doing this?
+Apache needs to be told exactly where the certificate and key are located. Running `httpd -t` checks for typos without crashing the live server.
+
+---
+
+## Step 6 - Verify HTTPS Connection
+
+Check if Apache is actually serving the new certificate on port 443.
 
 ```bash
-openssl s_client -connect 10.10.10.101:443 -servername 10.10.10.101 </dev/null 2>/dev/null | openssl x509 -noout -subject -ext subjectAltName
+openssl s_client -connect 10.10.10.101:443 </dev/null 2>/dev/null | openssl x509 -noout -subject -ext subjectAltName
 ```
-Expected:
-```
-subject=CN = 10.10.10.101
-X509v3 Subject Alternative Name:
+
+Expected Output:
+```text
+subject=C = PK, ST = Punjab, L = Lahore, O = MyCompany, OU = IT, CN = 10.10.10.101
+X509v3 Subject Alternative Name: 
     IP Address:10.10.10.101
 ```
-This confirms Apache is serving the **new** certificate on port 443, not just that the file exists on disk.
+
+### Why are we doing this?
+This confirms that the web server is successfully loading the certificate from disk and presenting it to clients. If this fails, the browser will not connect securely.
+
+---
 
 ## Step 7 - Redirect HTTP to HTTPS
 
+Force all visitors to use the secure connection.
+
+Create a new configuration file:
 ```bash
 vi /etc/httpd/conf.d/redirect.conf
 ```
+
+Add this VirtualHost block:
 ```apache
 <VirtualHost *:80>
     ServerName 10.10.10.101
@@ -135,7 +184,7 @@ vi /etc/httpd/conf.d/redirect.conf
 </VirtualHost>
 ```
 
-Disable the default welcome page, which can intercept port 80 requests:
+Disable the default welcome page to prevent conflicts:
 ```bash
 mv /etc/httpd/conf.d/welcome.conf /etc/httpd/conf.d/welcome.conf.disabled
 ```
@@ -146,47 +195,66 @@ httpd -t
 systemctl restart httpd
 ```
 
-**Verify:**
+**Verify the redirect:**
 ```bash
 curl -I http://10.10.10.101
 ```
-Expected:
-```
+Look for:
+```text
 HTTP/1.1 301 Moved Permanently
 Location: https://10.10.10.101/
 ```
-A `301` tells browsers and search engines the move is permanent.
+
+### Why are we doing this?
+Users often type `http://` or click old links. This ensures they are automatically upgraded to the encrypted `https://` version. The `301` status code tells browsers and search engines that this move is permanent.
+
+---
 
 ## Step 8 - Update WordPress URLs
 
-In **wp-admin → Settings → General** set:
+WordPress stores its own URL settings in the database. If these remain as `http://`, WordPress will generate insecure links, causing mixed-content warnings or redirect loops.
 
-- WordPress Address (URL): `https://10.10.10.101`
-- Site Address (URL): `https://10.10.10.101`
+1. Log in to `https://10.10.10.101/wp-admin`.
+2. Go to **Settings → General**.
+3. Change both fields to use `https`:
+   - **WordPress Address (URL):** `https://10.10.10.101`
+   - **Site Address (URL):** `https://10.10.10.101`
+4. Click **Save Changes**.
+5. You will be logged out. Log back in.
 
-Save and log in again. Without this, WordPress generates `http://` links, causing redirect loops or mixed-content warnings.
+### Why are we doing this?
+Without this step, your site might load securely initially, but clicking any menu item could drop you back to an insecure HTTP connection, triggering browser security warnings.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
+| Symptom | Likely Cause | Fix |
 |---|---|---|
-| Browser says name mismatch | Missing SAN | Regenerate in Step 3, verify the SAN |
-| `httpd -t` errors on SSL | `mod_ssl` missing or wrong paths | `dnf install mod_ssl`; recheck Step 5 |
-| Still serves the old cert | Apache not restarted | `systemctl restart httpd`, repeat Step 6 |
-| Port 443 refused | Firewall | `firewall-cmd --list-services` includes `https` |
-| Redirect not working | Welcome page intercepting | Confirm `welcome.conf` is disabled |
-| SELinux denial on key | Wrong file location/label | `restorecon -Rv /etc/pki/tls` |
-| Browser warning remains | Expected for self-signed | Import `cert.pem` into the Windows trusted root store |
+| Browser shows "NET::ERR_CERT_COMMON_NAME_INVALID" | Missing SAN | Re-run Step 3 ensuring `-addext "subjectAltName = IP:..."` is included. |
+| `httpd -t` fails with "Invalid command 'SSLCertificateFile'" | `mod_ssl` not installed | Run `dnf install mod_ssl -y`. |
+| Connection Refused on Port 443 | Firewall blocking | Ensure `firewall-cmd --list-services` includes `https`. |
+| Infinite Redirect Loop | WordPress URL mismatch | Ensure Step 8 is completed; check `wp_options` table in DB if locked out. |
+| Permission Denied on Key | Wrong permissions | Re-run Step 4: `chmod 600 /etc/pki/tls/private/key.pem`. |
 
 ## Checklist
 
-- [ ] Certificate has `IP Address:10.10.10.101` SAN
-- [ ] Key is `600`, owned by root
-- [ ] `httpd -t` returns `Syntax OK`
-- [ ] Port 443 serves the new certificate
-- [ ] `curl -I http://...` returns `301`
-- [ ] WordPress URLs use `https://`
+- [ ] OpenSSL config created in `/etc/pki/tls/openssl.cnf`
+- [ ] Certificate generated with correct SAN (IP Address)
+- [ ] Private key secured with `600` permissions
+- [ ] Apache configured to use new cert/key paths
+- [ ] `httpd -t` passes syntax check
+- [ ] HTTPS redirects work via `curl`
+- [ ] WordPress Admin settings updated to `https://`
+
+---
+
+## References
+
+For more documentation on creating self-signed certificates, I followed this guide:
+
+- Linuxize: [Creating a Self-Signed SSL Certificate](https://linuxize.com/post/creating-a-self-signed-ssl-certificate/)
+
+> **Note:** The linked guide uses basic `openssl` commands. Our implementation adds specific flags (`-addext`) and AlmaLinux-specific path configurations to ensure compatibility with modern browsers and SELinux.
 
 **Next:** [04 - Security Hardening](04-security-hardening.md)
