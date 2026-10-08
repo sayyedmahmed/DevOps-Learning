@@ -1,8 +1,8 @@
 # 05 - Hosting Multiple Sites 
 > ### Virtual Hosts + SSL + HTTP Redirect
 
-> **Series:** 5 of 5 | Previous: [04 - Security Hardening](04-security-hardening.md) | End of series
-
+> **Series:** 5 of 5 | Previous: [04 - Security Hardening](04-security-hardening.md)
+> 
 ## Overview
 
 This guide hosts multiple websites on a single VM using **Apache Virtual Hosts**.
