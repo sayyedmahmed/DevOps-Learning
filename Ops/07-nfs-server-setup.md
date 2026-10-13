@@ -1,4 +1,4 @@
-# 07 - Simple NFS Server Setup (AlmaLinux 10) - Beginner Edition
+# 07 - Simple NFS Server Setup
 
 **Prerequisite:** [01 - Hyper-V VM Setup](01-hyperv-vm-setup.md). Both VMs need `eth0` internet and `eth1` on `vSwitch-Internal`.
 **Status:** Updated with live lab implementation details.
