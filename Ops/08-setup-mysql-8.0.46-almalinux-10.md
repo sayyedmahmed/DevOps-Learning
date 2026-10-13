@@ -286,6 +286,11 @@ root
 
 If login succeeds, the MySQL installation and root authentication are working.
 
+
+echo 'export PATH="/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin:$PATH"' >> /root/.bashrc
+source /root/.bashrc
+
+
 ## 13. Useful verification commands
 
 Check the service:
