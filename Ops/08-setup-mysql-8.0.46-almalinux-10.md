@@ -1,157 +1,156 @@
-# Installing Oracle MySQL 8.0.46 on AlmaLinux 10.2
+# Complete Guide: Installing Oracle MySQL 8.0.46 on AlmaLinux 10.2
 
 ## 1. Objective
+Install Oracle MySQL Community Server 8.0.46 using the generic binary archive. 
 
-Install Oracle MySQL Community Server 8.0.46 on AlmaLinux 10.2, configure it as a systemd service, and set the MySQL `root` password to `root`.
+*   **Installation Directory:** `/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64`
+*   **Database Directory:** `/var/lib/mysql`
+*   **Socket:** `/var/lib/mysql/mysql.sock`
+*   **Port:** `3306`
+*   **Root Password:** `root` (for learning lab only)
 
-**Installation method:** Official MySQL generic Linux binary archive.
+---
 
-**Installation directory:** `/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64`
+## 2. Remove Conflicting MariaDB Services
+AlmaLinux includes MariaDB by default. MariaDB and Oracle MySQL use the same default port (3306) and similar socket paths.
 
-**Database directory:** `/var/lib/mysql`
-
-**Socket:** `/var/lib/mysql/mysql.sock`
-
-**Port:** `3306`
-
-## 2. Remove MariaDB
-
-The system originally had MariaDB 10.11 installed. We wanted Oracle MySQL instead.
-
-Stop MariaDB:
-
+Stop the MariaDB service:
 ```bash
 systemctl stop mariadb
 ```
+> **Why we do this:** We must stop the service to release port 3306 and unlock the data files in `/var/lib/mysql` so they don't conflict with the new MySQL installation.
 
 Remove the MariaDB server packages:
-
 ```bash
-dnf remove mariadb-server mariadb-server-utils
+dnf remove -y mariadb-server mariadb-server-utils
 ```
+> **Why we do this:** This removes the MariaDB server binaries. We remove the server, but leaving client libraries behind is fine if other applications need them.
 
-Verify:
-
+Verify the removal:
 ```bash
 rpm -qa | grep -Ei 'mariadb-server|mysql-community-server'
 ```
+> **Why we do this:** This queries the RPM database to ensure no conflicting server packages are left installed on the OS.
 
-Review the output to confirm the MariaDB server packages are gone.
+**Important:** Existing MariaDB database files in `/var/lib/mysql` are preserved during package removal. We will handle this data manually in Step 7.
 
-**Important:** Existing MariaDB database files must be preserved until you know they are no longer needed.
+---
 
-## 3. Install dependencies
-
+## 3. Install System Dependencies
 Install the required system packages:
-
 ```bash
 dnf install -y libaio numactl-libs xz tar curl
 ```
+> **Why we do this:** 
+> *   `libaio`: The Asynchronous I/O library is strictly required by MySQL's InnoDB storage engine for efficient disk operations.
+> *   `numactl-libs`: Helps MySQL allocate memory efficiently across multiple CPU nodes (NUMA architecture).
+> *   `xz`, `tar`, `curl`: Utilities required to download and extract the compressed binary archive.
 
-These packages provide supporting libraries and utilities for installation.
+---
 
 ## 4. Download MySQL 8.0.46
-
-Move to `/usr/local`:
-
+Move to the standard directory for third-party software:
 ```bash
 cd /usr/local
 ```
+> **Why we do this:** `/usr/local` is the standard Linux filesystem hierarchy location for software compiled or installed manually by the system administrator, keeping it separate from OS-managed `/usr` files.
 
 Download the official MySQL generic binary archive:
-
 ```bash
 curl -fL -o mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz \
 https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz
 ```
+> **Why we do this:** `curl -fL` ensures we fail silently on HTTP errors (`-f`) and follow redirects (`-L`). This downloads the exact, verified version directly from Oracle.
 
-Verify that the archive exists:
-
+Verify that the archive exists and check its size:
 ```bash
 ls -lh /usr/local/mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz
 ```
+> **Why we do this:** The downloaded archive should be approximately 852 MB. Checking the size ensures the download completed fully and isn't a corrupted partial file.
 
-The downloaded archive was approximately 852 MB.
+---
 
-## 5. Extract the archive
-
-Run:
-
+## 5. Extract the Archive
+Extract the compressed tarball:
 ```bash
-cd /usr/local
-
 tar -xJf mysql-8.0.46-linux-glibc2.28-x86_64.tar.xz
 ```
+> **Why we do this:** `-x` extracts, `-J` handles `.xz` compression, and `-f` specifies the file. This creates the actual directory structure containing the MySQL binaries.
 
 Verify the extracted directory:
-
 ```bash
 ls -ld /usr/local/mysql-8.0.46-linux-glibc2.28-x86_64
 ```
+> **Why we do this:** Confirms the directory was successfully created and shows its permissions.
 
-Check the MySQL version:
-
+Check the MySQL version to verify binary integrity:
 ```bash
 /usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/mysqld --version
 ```
+> **Why we do this:** Running the binary directly ensures it is executable and not corrupted. Expected output: `MySQL Community Server - GPL Version 8.0.46`.
 
-Expected output identifies:
+---
 
-```text
-MySQL Community Server - GPL
-Version 8.0.46
-```
-
-## 6. Create the MySQL user and group
-
-MySQL runs under a dedicated Linux user rather than the root operating-system account.
-
+## 6. Create the MySQL User and Group
+Create the dedicated group:
 ```bash
 groupadd mysql
+```
+> **Why we do this:** Creates a specific group for database files, allowing us to manage permissions cleanly.
+
+Create the dedicated system user:
+```bash
 useradd -r -g mysql -s /sbin/nologin mysql
 ```
+> **Why we do this:** MySQL should **never** run as the Linux `root` user. 
+> *   `-r`: Creates a system account (no home directory, no aging).
+> *   `-g mysql`: Assigns it to the mysql group.
+> *   `-s /sbin/nologin`: Prevents anyone from logging into the server via SSH as the "mysql" user. If the DB is hacked, the attacker is trapped.
 
-If the user or group already exists, check it rather than creating it again.
+---
 
-## 7. Prepare the database and log directories
-
+## 7. Prepare the Database and Log Directories
+Create the required directories:
 ```bash
 mkdir -p /var/lib/mysql
 mkdir -p /var/log/mysql
 mkdir -p /run/mysqld
 ```
+> **Why we do this:** 
+> *   `/var/lib/mysql`: Stores the actual database files (InnoDB data, logs).
+> *   `/var/log/mysql`: Stores the MySQL error log for troubleshooting.
+> *   `/run/mysqld`: A temporary filesystem (tmpfs) directory to store the `mysqld.pid` file, which systemd uses to track the process.
 
-Set ownership and permissions:
-
+Set ownership for all directories:
 ```bash
 chown mysql:mysql /var/lib/mysql
-chmod 750 /var/lib/mysql
-
 chown mysql:mysql /var/log/mysql
-chmod 750 /var/log/mysql
-
 chown mysql:mysql /run/mysqld
+```
+> **Why we do this:** The MySQL daemon runs as the `mysql` user. If these directories are owned by `root`, the daemon will crash on startup because it won't have permission to write data or logs.
+
+Set strict permissions:
+```bash
+chmod 750 /var/lib/mysql
+chmod 750 /var/log/mysql
 chmod 750 /run/mysqld
 ```
+> **Why we do this:** `750` means the owner (`mysql`) has full read/write/execute, the group (`mysql`) can read/execute, and "others" have zero access. This prevents other Linux users from reading raw database files.
 
-Restore the default SELinux context on the database directory:
-
+Restore the default SELinux context:
 ```bash
 restorecon -v /var/lib/mysql
 ```
+> **Why we do this:** AlmaLinux uses SELinux. If we just `chown` a directory, SELinux might still block MySQL from writing to it because the security context tag is wrong. `restorecon` fixes the SELinux tags.
 
-### Why did initialization initially fail?
+### Handling Old Data (Crucial Step)
+> **Why initialization fails if skipped:** MySQL requires a **completely empty** data directory to initialize. The original `/var/lib/mysql` contained MariaDB files (like `aria_log`, InnoDB files, and a `wordpress` database directory). 
+> **Action taken:** We preserved the old data by renaming it (e.g., `mv /var/lib/mysql /var/lib/mysql-old-20261013`) and created a fresh, empty `/var/lib/mysql`. Do not delete the backup until you confirm you don't need the old data.
 
-The original `/var/lib/mysql` directory contained MariaDB files, including `aria_log` files, InnoDB files, and a `wordpress` database directory. MySQL requires an empty data directory for initialization.
-
-We preserved the old data directory by renaming it and then created a fresh directory for MySQL. During the later clean setup, the active directory was also backed up as `/var/lib/mysql-old-20261013`.
-
-Do not delete these backups unless you have confirmed that their data is no longer needed.
+---
 
 ## 8. Configure MySQL
-
-Create `/etc/my.cnf`:
-
+Create the configuration file `/etc/my.cnf`:
 ```bash
 cat > /etc/my.cnf <<'EOF'
 [client]
@@ -166,13 +165,15 @@ pid-file=/run/mysqld/mysqld.pid
 log-error=/var/log/mysql/error.log
 EOF
 ```
+> **Why we do this:** 
+> *   `[mysqld]`: Tells the server where its binaries, data, and logs are.
+> *   `[client]`: Tells the command-line tool where to find the server.
+> *   **The Socket Path:** By default, the server might put the socket in `/var/lib/mysql`, while the client looks in `/tmp`. Explicitly defining `socket=` in both sections ensures they match, preventing the dreaded "Can't connect to local MySQL server through socket" error.
 
-The client and server must use the same socket path. Initially, the client tried `/tmp/mysql.sock`, while the server used `/var/lib/mysql/mysql.sock`, causing connection errors.
+---
 
-## 9. Initialize the database
-
-For the final clean setup, we used `--initialize-insecure` to create the MySQL system tables without assigning a temporary password.
-
+## 9. Initialize the Database
+Run the initialization command:
 ```bash
 /usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/mysqld \
   --initialize-insecure \
@@ -180,15 +181,14 @@ For the final clean setup, we used `--initialize-insecure` to create the MySQL s
   --basedir=/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64 \
   --datadir=/var/lib/mysql
 ```
+> **Why we do this:** This creates the internal system tables (the `mysql` schema) required for the database to function. 
+> *   `--initialize-insecure`: Creates the `root` account **without** a password. This allows us to log in immediately to set our own password, rather than hunting for a random temporary password in the error logs.
+> *   *Warning:* This must only be run on a fresh, empty data directory. Running it on an existing database will corrupt it.
 
-This command must only be used for a fresh, empty data directory. It should not be repeated on an initialized database.
+---
 
-Because this option creates the root account without a password, set the password immediately after starting MySQL.
-
-## 10. Create a systemd service
-
-Create `/etc/systemd/system/mysqld.service`:
-
+## 10. Create a Systemd Service
+Create the service file `/etc/systemd/system/mysqld.service`:
 ```bash
 cat > /etc/systemd/system/mysqld.service <<'EOF'
 [Unit]
@@ -210,121 +210,131 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 ```
+> **Why we do this:** Because we used a generic binary, the OS doesn't know how to start it automatically. This file tells `systemd` how to manage it.
+> *   `User=mysql`: Ensures the process drops root privileges and runs safely as the mysql user.
+> *   `LimitNOFILE=65535`: Databases open thousands of files. This increases the OS limit for open file descriptors so MySQL doesn't crash under heavy load.
 
-Reload systemd and start MySQL:
-
+Reload systemd to read the new file:
 ```bash
 systemctl daemon-reload
+```
+> **Why we do this:** Tells the systemd manager to re-read all unit files and detect the new `mysqld.service`.
+
+Enable and start MySQL:
+```bash
 systemctl enable --now mysqld
 ```
+> **Why we do this:** `enable` sets it to start automatically on server reboot. `--now` starts it immediately in the current session.
 
-Check the service:
-
+Check the service status:
 ```bash
 systemctl status mysqld --no-pager
 ```
+> **Why we do this:** Verifies the service started successfully. The expected state is `Active: active (running)`.
 
-The expected state is:
+---
 
-```text
-Active: active (running)
-```
+## 11. Set the MySQL Root Password & Enable Direct Access
 
-If the service fails, inspect the error log:
-
+Add the MySQL binaries to your system PATH:
 ```bash
-tail -50 /var/log/mysql/error.log
+echo 'export PATH="/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin:$PATH"' >> /root/.bashrc
+source /root/.bashrc
 ```
+> **Why we do this:** Typing `/usr/local/.../bin/mysql` every time is inefficient. This adds the directory to your environment variables so you can just type `mysql`. `source` applies it to your current terminal session immediately.
 
-## 11. Set the MySQL root password
-
-Connect to MySQL using the installed binary:
-
+Connect to MySQL (no password required yet):
 ```bash
-/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/mysql -u root
+mysql -u root
 ```
+> **Why we do this:** Because we used `--initialize-insecure` in Step 9, the root account is currently blank.
 
-Because we used `--initialize-insecure`, no password is initially required.
-
-At the `mysql>` prompt, run:
-
+At the `mysql>` prompt, set the password:
 ```sql
 ALTER USER 'root'@'localhost' IDENTIFIED BY 'root';
 ```
+> **Why we do this:** Secures the database by assigning a password to the root account. (Note: 'root' is for learning only; use strong passwords in production).
 
-Verify the installed version:
+Reload the privilege tables:
+```sql
+FLUSH PRIVILEGES;
+```
+> **Why we do this:** Forces the MySQL server to re-read the grant tables in memory, ensuring the new password takes effect immediately.
 
+Verify the version inside the prompt:
 ```sql
 SELECT VERSION();
 ```
+> **Why we do this:** Confirms you are connected to the correct Oracle MySQL instance (Expected: `8.0.46`).
 
-Expected result:
-
-```text
-8.0.46
-```
-
-Exit the MySQL client:
-
+Exit the client:
 ```sql
 exit;
 ```
 
-## 12. Test the password
+---
 
-Run:
+## 12. Test the Password and Database Functionality
 
+Test the password login:
 ```bash
-/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/mysql -u root -p
+mysql -u root -p
 ```
+> **Why we do this:** When prompted, enter `root`. This verifies that the password change was successful and authentication is working.
 
-When prompted, enter:
+> **Side Note: Using the Absolute Path**
+> If you ever need to use the absolute path (e.g., in a bash script where the PATH isn't loaded, or if you are troubleshooting a broken PATH environment), you can bypass the environment variables and call the binary directly:
+> `/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/mysql -u root -p`
 
-```text
-root
+Test actual database operations (run these inside the `mysql>` prompt):
+```sql
+CREATE DATABASE test_lab_db;
+SHOW DATABASES;
+DROP DATABASE test_lab_db;
+EXIT;
 ```
+> **Why we do this:** Logging in only proves authentication works. Creating and dropping a database proves that the InnoDB storage engine, file permissions, and SQL parser are fully functional and can write to the disk.
 
-If login succeeds, the MySQL installation and root authentication are working.
+---
 
+## 13. Useful Verification and Troubleshooting Commands
 
-echo 'export PATH="/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin:$PATH"' >> /root/.bashrc
-source /root/.bashrc
-
-
-## 13. Useful verification commands
-
-Check the service:
-
+Check the service status:
 ```bash
 systemctl status mysqld --no-pager
 ```
+> **Why:** The first step in troubleshooting is always checking if the OS thinks the service is running.
 
-Check the version:
-
+Check the MySQL version from the CLI:
 ```bash
-/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/mysql --version
+mysql --version
 ```
+> **Why:** Verifies that your PATH is configured correctly and points to the right binary.
 
 Check the listening port:
-
 ```bash
 ss -lntp | grep ':3306'
 ```
+> **Why:** `ss` shows socket statistics. This confirms MySQL is actually listening on the network port 3306 and accepting connections.
 
 Check the error log:
-
 ```bash
 tail -50 /var/log/mysql/error.log
 ```
+> **Why:** If `systemctl status` says the service failed, or if you can't connect, this log contains the exact reason (e.g., permission denied, out of memory, corrupt InnoDB log).
 
-## 14. Important security notes
+---
 
-- The password `root` is acceptable only for an isolated learning lab. Use a strong password for production.
-- Keep the old MariaDB and MySQL data backups until you have confirmed that you do not need their contents.
-- Do not run database initialization commands again on an existing database.
-- The generic binary installation does not automatically configure all operating-system integration, security policies, or future upgrades.
-- MySQL 8.0 is an older release series. Check Oracle's support lifecycle before using it for a production system.
+## 14. Important Security Notes
 
-## Final result
+*   **Password Strength:** The password `root` is acceptable only for an isolated learning lab. Use a strong, complex password for production.
+*   **Data Backups:** Keep the old MariaDB and MySQL data backups (like `/var/lib/mysql-old-20261013`) until you have confirmed that you do not need their contents.
+*   **No Re-initialization:** Do not run database initialization commands (`--initialize`) again on an existing database. It will overwrite system tables and corrupt your data.
+*   **Manual Upgrades:** The generic binary installation does not automatically configure OS integration or future upgrades. You must manually download and replace the binary to update MySQL.
+*   **Support Lifecycle:** MySQL 8.0 is an older release series. Check Oracle's support lifecycle before using it for a production system.
 
-Oracle MySQL Community Server **8.0.46** is installed under `/usr/local`, configured to use `/var/lib/mysql`, managed by systemd, and accessible through the MySQL client. The root password is `root` for the learning lab.
+---
+
+## Final Result
+
+Oracle MySQL Community Server **8.0.46** is successfully installed under `/usr/local`, configured to use `/var/lib/mysql`, managed by systemd, and accessible through the direct `mysql` client command. The root password is set to `root` for the learning lab.s
