@@ -1,15 +1,19 @@
-
-09 - MySQL on Shared NFS Storage Without Pacemaker
+# 09 - MySQL on Shared NFS Storage Without Pacemaker
 
 **Architecture Name:** Shared-Nothing Compute with Shared Storage Architecture, more commonly described as a Shared Storage High Availability (HA) Architecture.
 
-Platform: AlmaLinux 10
-MySQL: Oracle MySQL Community Server 8.0.46
-Architecture: Shared NFS storage with manual MySQL failover
-Automation: None yet. Pacemaker will be configured in a separate guide.
+**Platform:** AlmaLinux 10  
+**MySQL:** Oracle MySQL Community Server 8.0.46  
+**Architecture:** Shared NFS storage with manual MySQL failover  
+**Automation:** None yet. Pacemaker will be configured in a separate guide.
 
-Important: This guide documents the lab using the paths, IP addresses, and MySQL installation you actually used. Read each step before running its commands. Do not run MySQL on both database nodes simultaneously.
+> **Important:** This guide documents the lab using the paths, IP addresses, and MySQL installation you actually used. Read each step before running its commands. Do not run MySQL on both database nodes simultaneously.
 
+## 1. Overview
+
+The goal is to store MySQL's database files on a separate NFS server and allow either database node to use those files. MySQL runs on only one node at a time. You manually stop it on one node before starting it on the other.
+
+```text
              Database Node 1                 Database Node 2
               10.10.10.101                    10.10.10.102
               MySQL: Active                   MySQL: Stopped
@@ -26,48 +30,50 @@ Important: This guide documents the lab using the paths, IP addresses, and MySQL
                              mysql_data/
                                   |
                           Shared database files
+```
 
-Lab configuration
-| Machine|Role|IP address|
-| ---|---|---|
-| node1|Database node 1|10.10.10.101|
-| node2|Database node 2|10.10.10.102|
-| NFS server|Shared storage|10.10.10.200|
+### Lab configuration
 
-| Setting|Value|
-| ---|---|
-| NFS export|/srv/nfs-dbstorage/shared|
-| NFS mountpoint on database nodes|/mnt/shared|
-| Shared MySQL datadir|/mnt/shared/mysql_data|
-| MySQL installation|/usr/local/mysql-8.0.46-linux-glibc2.28-x86_64|
-| MySQL socket|/var/lib/mysql/mysql.sock|
-| MySQL PID file|/run/mysqld/mysqld.pid|
-| MySQL error log|/var/log/mysql/error.log|
-| MySQL operating-system user|mysql , UID/GID  27:27|
+| Machine | Role | IP address |
+| --- | --- | --- |
+| node1 | Database node 1 | 10.10.10.101 |
+| node2 | Database node 2 | 10.10.10.102 |
+| NFS server | Shared storage | 10.10.10.200 |
 
-What this setup provides
+| Setting | Value |
+| --- | --- |
+| NFS export | /srv/nfs-dbstorage/shared |
+| NFS mountpoint on database nodes | /mnt/shared |
+| Shared MySQL datadir | /mnt/shared/mysql_data |
+| MySQL installation | /usr/local/mysql-8.0.46-linux-glibc2.28-x86_64 |
+| MySQL socket | /var/lib/mysql/mysql.sock |
+| MySQL PID file | /run/mysqld/mysqld.pid |
+| MySQL error log | /var/log/mysql/error.log |
+| MySQL operating-system user | mysql , UID/GID 27:27 |
+
+### What this setup provides
 - Shared database files accessible from both nodes.
 - Manual switching between database nodes.
 - Persistence of database files independently of either database VM.
 
-What this setup does not provide
+### What this setup does not provide
 - Automatic failover.
 - Protection against failure of the NFS server.
 - A database backup merely because the files are on NFS.
 - Protection against both MySQL instances running simultaneously.
 - Production-grade database storage guarantees.
 
-Golden rule: Never run two MySQL servers against the same writable data directory. If a node crashes, do not start MySQL on the other node until you have established that the old instance cannot still access the shared files. In a clustered design, this requires reliable fencing.
+> **Golden rule:** Never run two MySQL servers against the same writable data directory. If a node crashes, do not start MySQL on the other node until you have established that the old instance cannot still access the shared files. In a clustered design, this requires reliable fencing.
 
-Part A - Prepare the NFS Server
+## Part A - Prepare the NFS Server
 
-Step 1 - Install NFS utilities
+### Step 1 - Install NFS utilities
 Run on: NFS server (`10.10.10.200`)
 ```bash
 dnf install -y nfs-utils
 ```
 
-Step 2 - Create the shared directory
+### Step 2 - Create the shared directory
 ```bash
 mkdir -p /srv/nfs-dbstorage/shared/mysql_data
 ```
@@ -76,8 +82,9 @@ MySQL runs under UID/GID `27:27` on the database nodes. Confirm this on both nod
 id mysql
 ```
 Expected:
-`uid=27(mysql) gid=27(mysql)`
-
+```text
+uid=27(mysql) gid=27(mysql)
+```
 On the NFS server, assign ownership using the numeric IDs:
 ```bash
 chown 27:27 /srv/nfs-dbstorage/shared/mysql_data
@@ -85,7 +92,7 @@ chmod 750 /srv/nfs-dbstorage/shared/mysql_data
 ```
 Numeric ownership matters because NFS permissions depend on user IDs, not merely usernames.
 
-Step 3 - Configure the NFS export
+### Step 3 - Configure the NFS export
 Create a separate export configuration file so you do not accidentally overwrite other exports:
 ```bash
 vi /etc/exports.d/mysql-nfs.exports
@@ -106,7 +113,7 @@ exportfs -v
 ```
 Confirm that both database node IPs are allowed to access the shared directory.
 
-Step 4 - Start NFS and configure the firewall
+### Step 4 - Start NFS and configure the firewall
 ```bash
 systemctl enable --now nfs-server
 ```
@@ -122,11 +129,11 @@ firewall-cmd --list-services
 ```
 The `nfs` service should appear in the firewall's allowed services.
 
-SELinux note: Keep SELinux enforcing where possible. If NFS export access is blocked, inspect the audit log and configure the appropriate SELinux policy rather than disabling SELinux without investigation.
+**SELinux note:** Keep SELinux enforcing where possible. If NFS export access is blocked, inspect the audit log and configure the appropriate SELinux policy rather than disabling SELinux without investigation.
 
-Part B - Prepare Both Database Nodes
+## Part B - Prepare Both Database Nodes
 
-Step 5 - Verify MySQL installation
+### Step 5 - Verify MySQL installation
 Run on: node1 and node2
 ```bash
 /usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/mysqld --version
@@ -139,7 +146,7 @@ id mysql
 ```
 Both nodes must use compatible MySQL versions, matching user IDs, and compatible configurations.
 
-Step 6 - Create the local log and runtime directories
+### Step 6 - Create the local log and runtime directories
 Run on: node1 and node2
 ```bash
 mkdir -p /var/log/mysql
@@ -158,7 +165,7 @@ chmod 640 /var/log/mysql/error.log
 ```
 These paths are local to each database node. The database files themselves will live on NFS.
 
-Step 7 - Configure MySQL
+### Step 7 - Configure MySQL
 Run on: node1 and node2
 
 Back up the existing configuration:
@@ -182,7 +189,7 @@ socket=/var/lib/mysql/mysql.sock
 pid-file=/run/mysqld/mysqld.pid
 log-error=/var/log/mysql/error.log
 ```
-Important:
+**Important:**
 - `datadir` points to the shared NFS directory.
 - The socket, PID file, and error log remain local.
 - Do not use `--initialize` against the shared directory.
@@ -194,7 +201,7 @@ Verify the effective MySQL options:
 ```
 Confirm that `--datadir=/mnt/shared/mysql_data` appears and `--initialize` does not.
 
-Step 8 - Verify the MySQL systemd service
+### Step 8 - Verify the MySQL systemd service
 Run on: node1 and node2
 
 Inspect the service:
@@ -239,9 +246,9 @@ systemctl disable mysqld
 ```
 This prevents ordinary systemd boot-time enabling. It does not prevent a manual `systemctl start mysqld`. Later, Pacemaker must manage the service explicitly.
 
-Part C - Mount NFS on Both Nodes
+## Part C - Mount NFS on Both Nodes
 
-Step 9 - Create the mountpoint
+### Step 9 - Create the mountpoint
 Run on: node1 and node2
 ```bash
 mkdir -p /mnt/shared
@@ -256,7 +263,7 @@ showmount -e 10.10.10.200
 ```
 Note that `showmount` output can vary with NFS server configuration; the actual mount test is the more important check.
 
-Step 10 - Mount the shared export
+### Step 10 - Mount the shared export
 Run on: node1 and node2
 ```bash
 mount -t nfs4 -o hard,vers=4.2 \
@@ -268,8 +275,9 @@ findmnt /mnt/shared
 df -h /mnt/shared
 ```
 Expected source:
-`10.10.10.200:/srv/nfs-dbstorage/shared`
-
+```text
+10.10.10.200:/srv/nfs-dbstorage/shared
+```
 Check access as the MySQL user:
 ```bash
 runuser -u mysql -- test -r /mnt/shared/mysql_data \
@@ -279,7 +287,7 @@ runuser -u mysql -- test -w /mnt/shared/mysql_data \
 ```
 Both checks should succeed.
 
-Optional: Make the mount persistent
+**Optional: Make the mount persistent**
 After confirming the mount works, add an entry to `/etc/fstab` on each database node:
 ```text
 10.10.10.200:/srv/nfs-dbstorage/shared /mnt/shared nfs4 rw,hard,vers=4.2,_netdev 0 0
@@ -295,12 +303,12 @@ findmnt --verify
 ```
 The MySQL service must not start unless the NFS mount is available. A mountpoint directory existing locally does not prove that NFS is mounted.
 
-Part D - Move the Existing Database from node1 to NFS
+## Part D - Move the Existing Database from node1 to NFS
 
 This section reflects what was done in the actual lab. Node1 already had a working MySQL installation with its database in `/var/lib/mysql`.
 Do not follow this migration section on a fresh server that has no existing database to preserve.
 
-Step 11 - Make a logical backup
+### Step 11 - Make a logical backup
 Run on: node1 while the original local MySQL database is running
 
 Create a backup directory:
@@ -324,17 +332,18 @@ head -n 20 /root/mysql-backup/all-databases.sql
 ```
 Keep this backup. NFS is shared storage, not an independent backup.
 
-Step 12 - Stop MySQL cleanly on node1
+### Step 12 - Stop MySQL cleanly on node1
 ```bash
 systemctl stop mysqld
 systemctl is-active mysqld
 ```
 Expected:
-`inactive`
-
+```text
+inactive
+```
 Do not copy a live database directory with ordinary `rsync` and assume the copy is consistent. Stop MySQL cleanly first.
 
-Step 13 - Copy the existing data to NFS
+### Step 13 - Copy the existing data to NFS
 Confirm that NFS is mounted:
 ```bash
 findmnt /mnt/shared
@@ -370,14 +379,15 @@ runuser -u mysql -- rsync -avn --checksum --no-owner --no-group \
 ```
 No listed file transfers is a useful sign that the source and destination contents match.
 
-Step 14 - Start MySQL on node1 using NFS
+### Step 14 - Start MySQL on node1 using NFS
 Check the configuration:
 ```bash
 grep -E '^(basedir|datadir|socket|pid-file|log-error)=' /etc/my.cnf
 ```
 It must include:
-`datadir=/mnt/shared/mysql_data`
-
+```text
+datadir=/mnt/shared/mysql_data
+```
 Confirm NFS is mounted and MySQL remains stopped:
 ```bash
 findmnt /mnt/shared
@@ -397,8 +407,9 @@ Check that MySQL responds:
   --socket=/var/lib/mysql/mysql.sock -uroot -p ping
 ```
 Expected:
-`mysqld is alive`
-
+```text
+mysqld is alive
+```
 Verify the actual data directory:
 ```bash
 /usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/mysql \
@@ -406,8 +417,9 @@ Verify the actual data directory:
   -e "SELECT @@hostname, @@datadir;"
 ```
 Expected datadir:
-`/mnt/shared/mysql_data/`
-
+```text
+/mnt/shared/mysql_data/
+```
 Check databases:
 ```bash
 /usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/mysql \
@@ -416,9 +428,9 @@ Check databases:
 ```
 If all checks pass, node1 is using the shared NFS database.
 
-Part E - Prepare and Test node2
+## Part E - Prepare and Test node2
 
-Step 15 - Verify node2's configuration
+### Step 15 - Verify node2's configuration
 Before starting MySQL on node2, verify that node1 is stopped:
 
 Run on: node1
@@ -427,7 +439,9 @@ systemctl stop mysqld
 systemctl is-active mysqld
 ```
 Expected:
-`inactive`
+```text
+inactive
+```
 
 Run on: node2
 ```bash
@@ -444,8 +458,9 @@ Check configuration:
 cat /etc/my.cnf
 ```
 It must point to:
-`datadir=/mnt/shared/mysql_data`
-
+```text
+datadir=/mnt/shared/mysql_data
+```
 Verify NFS and permissions:
 ```bash
 findmnt /mnt/shared
@@ -455,10 +470,11 @@ runuser -u mysql -- test -w /mnt/shared/mysql_data \
   && echo "MySQL can write to shared database directory"
 ```
 
-Step 16 - Fix local log permissions if necessary
+### Step 16 - Fix local log permissions if necessary
 The lab encountered this error on node2:
-`Could not open file '/var/log/mysql/error.log' for error logging: Permission denied`
-
+```text
+Could not open file '/var/log/mysql/error.log' for error logging: Permission denied
+```
 If the same error occurs, first stop MySQL:
 ```bash
 systemctl stop mysqld
@@ -474,7 +490,7 @@ chmod 640 /var/log/mysql/error.log
 ```
 If SELinux is enforcing and the error persists, investigate the audit log and file contexts instead of disabling SELinux indiscriminately.
 
-Step 17 - Start MySQL on node2
+### Step 17 - Start MySQL on node2
 Only proceed when node1 is confirmed inactive.
 
 On node2:
@@ -501,9 +517,9 @@ The same databases are visible.
 
 Do not run `mysqld --initialize` on node2. It is not a fresh database. It must use the database that already exists on NFS.
 
-Part F - Manual Failover Between Nodes
+## Part F - Manual Failover Between Nodes
 
-Step 18 - Understand the switching process
+### Step 18 - Understand the switching process
 For a normal manual switch, you must:
 1. Stop MySQL on the currently active node.
 2. Verify that it is stopped.
@@ -512,15 +528,16 @@ For a normal manual switch, you must:
 
 Each node mounts NFS separately. You normally do not need to unmount `/mnt/shared` when stopping MySQL on one node; the other node has its own NFS mount.
 
-Step 19 - Switch from node2 to node1
+### Step 19 - Switch from node2 to node1
 First, on node2:
 ```bash
 systemctl stop mysqld
 systemctl is-active mysqld
 ```
 Confirm:
-`inactive`
-
+```text
+inactive
+```
 Then, on node1:
 ```bash
 systemctl is-active mysqld
@@ -540,7 +557,7 @@ Verify:
   -e "SELECT @@hostname, @@datadir; SHOW DATABASES;"
 ```
 
-Step 20 - Switch from node1 to node2
+### Step 20 - Switch from node1 to node2
 On node1:
 ```bash
 systemctl stop mysqld
@@ -567,7 +584,7 @@ Verify:
   -e "SELECT @@hostname, @@datadir; SHOW DATABASES;"
 ```
 
-Step 21 - Prove that data persists across switches
+### Step 21 - Prove that data persists across switches
 On the currently active node, create a test database and table if one does not already exist:
 ```bash
 /usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/mysql \
@@ -595,14 +612,14 @@ On the new active node, run:
 ```
 The inserted row should still exist because both nodes use the same database directory.
 
-Step 22 - Simulate a node failure: safety warning
+### Step 22 - Simulate a node failure: safety warning
 A normal stop/start test is not the same as a crash test.
 
 If you turn off a VM while MySQL is active, the old server may have outstanding storage operations or NFS state. Do not assume that waiting a fixed amount of time clears the problem. Do not try to clear locks manually or start the other server blindly.
 
 For this beginner lab, first complete the normal manual switching test. Do not perform crash failover until you have a verified way to ensure the failed node cannot access the shared storage. Pacemaker with correctly configured fencing is the next phase.
 
-Part G - Troubleshooting
+## Part G - Troubleshooting
 
 | Problem | Likely cause | What to check |
 | --- | --- | --- |
@@ -618,7 +635,7 @@ Part G - Troubleshooting
 | NFS server fails | Shared storage is unavailable | MySQL availability may be lost on both nodes |
 | MySQL starts after reboot unexpectedly | Service is enabled or another startup mechanism is active | Check `systemctl is-enabled mysqld` and service status |
 
-Useful diagnostic commands:
+**Useful diagnostic commands:**
 ```bash
 # Service status
 systemctl status mysqld --no-pager
@@ -634,7 +651,7 @@ findmnt /mnt/shared
 /usr/local/mysql-8.0.46-linux-glibc2.28-x86_64/bin/my_print_defaults mysqld
 ```
 
-Part H - Command Cheat Sheet
+## Part H - Command Cheat Sheet
 
 | Task | Command |
 | --- | --- |
@@ -650,7 +667,7 @@ Part H - Command Cheat Sheet
 | Check NFS exports | `exportfs -v` on the NFS server |
 | Create a logical backup | Use the `mysqldump` command in Step 11 |
 
-Part I - Final Checklist
+## Part I - Final Checklist
 
 - [ ] NFS server `10.10.10.200` exports `/srv/nfs-dbstorage/shared`.
 - [ ] Both database nodes mount the export at `/mnt/shared`.
@@ -666,14 +683,10 @@ Part I - Final Checklist
 - [ ] Independent backups are retained outside the shared NFS storage.
 - [ ] Automatic failover and fencing are not assumed to work yet.
 
-Next project
-**P1 - MySQL HA with Pacemaker and Corosync**
+## Next project
+
+**P1 - MySQL HA with Pacemaker and Corosync**  
 This next project will add cluster management, controlled resource failover, and fencing. The shared NFS server remains a separate failure point, so it will need its own availability and backup plan.
 
-Current lab status: Shared NFS storage and manual MySQL switching have been tested successfully. Automatic failover has not yet been configured.
+**Current lab status:** Shared NFS storage and manual MySQL switching have been tested successfully. Automatic failover has not yet been configured.
 ```
-
-### What was changed:
-1. Added the professional architecture name right at the top under the title so you always know what to call it.
-2. Fixed a minor copy-paste formatting artifact in the header (separated `AlmaLinux 10`, `MySQL:`, `Architecture:`, and `Automation:` onto their own lines for readability). 
-3. Everything else remains 100% identical to your original document.
