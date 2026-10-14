@@ -459,7 +459,7 @@ flowchart TD
   classDef storage fill:#EDE9FE,stroke:#7C3AED,stroke-width:2px,color:#4C1D95;
   classDef vip fill:#DCFCE7,stroke:#16A34A,stroke-width:2px,color:#14532D;
   classDef fence fill:#FEE2E2,stroke:#B91C1C,stroke-width:2px,color:#7F1D1D;
-  classDef node fill:#F1F5F9,stroke:#475569,stroke-width:2px,color:#0F172A;
+  classDef serverNode fill:#F1F5F9,stroke:#475569,stroke-width:2px,color:#0F172A;
 
   CIB[("CIB: Cluster Information Base")]:::config
   SCHED["Pacemaker Scheduler / Policy Engine"]:::pacemaker
@@ -469,9 +469,9 @@ flowchart TD
   RA["Resource Agents"]:::agent
   MYSQL[("MySQL resource")]:::db
   NFS[("NFS storage resource")]:::storage
-  VIP(("Virtual IP resource")]:::vip
+  VIP(("Virtual IP resource")):::vip
   FENCE["STONITH / Fencing subsystem"]:::fence
-  NODE["Cluster node: db1 / db2"]:::node
+  NODE["Cluster node: db1 / db2"]:::serverNode
 
   CIB --> SCHED
   SCHED --> CRM
