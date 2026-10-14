@@ -685,7 +685,8 @@ findmnt /mnt/shared
 
 ## Next project
 
-**P1 - MySQL HA with Pacemaker and Corosync**  
+**[P1 - MySQL HA with Pacemaker and Corosync](P1-mysql-ha-nfs-pacemaker.md)**  
 This next project will add cluster management, controlled resource failover, and fencing. The shared NFS server remains a separate failure point, so it will need its own availability and backup plan.
+
 
 **Current lab status:** Shared NFS storage and manual MySQL switching have been tested successfully. Automatic failover has not yet been configured.
