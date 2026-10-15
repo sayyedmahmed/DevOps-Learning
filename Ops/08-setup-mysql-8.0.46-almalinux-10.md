@@ -337,4 +337,86 @@ tail -50 /var/log/mysql/error.log
 
 ## Final Result
 
-Oracle MySQL Community Server **8.0.46** is successfully installed under `/usr/local`, configured to use `/var/lib/mysql`, managed by systemd, and accessible through the direct `mysql` client command. The root password is set to `root` for the learning lab.s
+Oracle MySQL Community Server **8.0.46** is successfully installed under `/usr/local`, configured to use `/var/lib/mysql`, managed by systemd, and accessible through the direct `mysql` client command. The root password is set to `root` for the learning lab.
+
+---
+
+## Install MySQL Community Server 8.0.46 Using DNF
+
+### Objective
+Install exactly MySQL Community Server **8.0.46** using DNF on AlmaLinux.
+
+### Steps Followed
+
+**Step 1: Find the Oracle MySQL repository setup package**
+
+Visit the [MySQL Yum Repository Downloads](https://dev.mysql.com/downloads/repo/yum/) page and select the repository setup RPM for the appropriate operating system version.
+
+For AlmaLinux 9, we selected:
+
+`mysql84-community-release-el9-4.noarch.rpm`
+
+**Step 2: Install the repository setup package**
+
+Copy the download link from Oracle's website and install it directly using DNF:
+
+```bash
+dnf install -y https://dev.mysql.com/get/mysql84-community-release-el9-4.noarch.rpm
+```
+
+This installs the repository configuration package, not MySQL Server itself.
+
+**Step 3: Check available MySQL repositories**
+
+```bash
+dnf repolist --all | grep -i mysql
+```
+
+**Step 4: Enable the MySQL 8.0 repository**
+
+```bash
+dnf config-manager --enable mysql80-community
+```
+
+Verify that it is enabled:
+
+```bash
+dnf repolist --enabled | grep mysql80
+```
+
+**Step 5: Check available server versions**
+
+```bash
+dnf --refresh --showduplicates list mysql-community-server
+```
+
+Look for version `8.0.46` before installing.
+
+**Step 6: Install the exact version**
+
+If version `8.0.46` is available, install it using DNF:
+
+```bash
+dnf install -y mysql-community-server-8.0.46
+```
+
+**Step 7: Verify the installation**
+
+```bash
+mysqld --version
+rpm -q mysql-community-server
+```
+
+### Issue Encountered on AlmaLinux 10.2
+
+The MySQL 8.0 repository returned HTTP `404` when DNF attempted to retrieve metadata from:
+
+`https://repo.mysql.com/yum/mysql-8.0-community/el/10/x86_64/`
+
+This indicates that the repository does not provide the requested EL10 metadata. Therefore, the MySQL 8.0.46 installation could not proceed through this repository on AlmaLinux 10.2.
+
+### Conclusion
+
+The repository configuration package was installed successfully, and the `mysql80-community` repository was enabled. However, DNF could not retrieve its metadata on AlmaLinux 10.2.
+
+**For future attempts:** Use an AlmaLinux 9 VM, configure the MySQL 8.0 repository, verify that version `8.0.46` is available, and then install it through DNF. Do not install EL9 RPM packages on AlmaLinux 10. Always verify package availability before installation.
