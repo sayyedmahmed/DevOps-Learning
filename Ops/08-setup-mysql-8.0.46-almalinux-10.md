@@ -100,7 +100,7 @@ groupadd mysql
 
 Create the dedicated system user:
 ```bash
-useradd -r -g mysql -s /sbin/nologin mysql
+useradd -r -u 27 -g 27 -s /sbin/nologin mysql
 ```
 > **Why we do this:** MySQL should **never** run as the Linux `root` user. 
 > *   `-r`: Creates a system account (no home directory, no aging).
