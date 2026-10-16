@@ -41,6 +41,7 @@ The database must remain accessible through the VIP even if the active MySQL nod
                   /srv/nfs-dbstorage
 ```
 
+
 ### VM / Host Summary
 
 | Hostname | Role | Internal IP | Notes |
@@ -2272,6 +2273,76 @@ Lesson:
 - Real production needs highly available storage or replication.
 
 ---
+
+## Final Architecture Visualization
+
+After completing all phases, your lab environment will look like this. This diagram shows the relationship between the Client, the Pacemaker Cluster (with its Active/Passive nodes), and the Shared NFS Storage.
+
+
+```mermaid
+flowchart TB
+    CLIENT(["🖥️ Client VM / Application<br/>10.10.10.101"])
+
+    VIP{{"🌐 Virtual IP (VIP)<br/>10.10.10.130:3306"}}
+
+    subgraph CLUSTER["⚙️ Pacemaker High Availability Cluster · 10.10.10.0/24"]
+        direction TB
+
+        subgraph CONTROL["Cluster Control Layer"]
+            CORO(["Corosync<br/>Membership & Communication"])
+            PAC(["Pacemaker<br/>Resource Manager"])
+            CORO <--> PAC
+        end
+
+        subgraph NODES["Database Nodes"]
+            direction LR
+
+            subgraph DB1["🟢 db-node1 · 10.10.10.110"]
+                direction TB
+                M1[("MySQL 8.0<br/>Active Instance")]
+                MP1[("NFS Mount<br/>/var/lib/mysql_data")]
+                SOCK1(["Local Socket<br/>/var/lib/mysql/mysql.sock"])
+                M1 --- MP1
+                M1 --- SOCK1
+            end
+
+            subgraph DB2["⚪ db-node2 · 10.10.10.120"]
+                direction TB
+                STANDBY["Standby Node<br/>Ready for Failover"]
+                MP2[("NFS Mount Point<br/>Same Shared Datadir")]
+            end
+        end
+
+        PAC -.->|"Controls resources"| M1
+        PAC -.->|"Moves resources on failover"| STANDBY
+        PAC -.->|"Manages floating IP"| VIP
+    end
+
+    subgraph STORAGE["🗄️ Shared Storage Layer"]
+        NFS[("NFS Server<br/>10.10.10.200")]
+        EXPORT["Export<br/>/srv/nfs-dbstorage"]
+        DISK[("Underlying Filesystem / Disk")]
+        NFS --- EXPORT --- DISK
+    end
+
+    CLIENT -->|"MySQL connection · TCP 3306"| VIP
+    VIP -->|"Owned by active node"| M1
+    MP1 <-->|"Read / Write database files"| EXPORT
+    MP2 -.->|"Same export; mounted when configured"| EXPORT
+
+    classDef client fill:#fff3cd,stroke:#d39e00,color:#333,stroke-width:2px
+    classDef active fill:#d1e7dd,stroke:#198754,color:#333,stroke-width:2px
+    classDef standby fill:#e9ecef,stroke:#6c757d,color:#333
+    classDef control fill:#cfe2ff,stroke:#0d6efd,color:#333
+    classDef storage fill:#d1e7dd,stroke:#198754,color:#333
+
+    class CLIENT client
+    class M1,MP1 active
+    class STANDBY,MP2 standby
+    class CORO,PAC control
+    class NFS,EXPORT,DISK storage
+    style VIP fill:#f8d7da,stroke:#dc3545,color:#333,stroke-width:3px
+```
 
 # Phase 9 - Useful Verification Commands
 
