@@ -485,6 +485,74 @@ passwd -u root
 ```
 
 ---
+# Appendix A - Clone a VM (Hyper-V)
+
+Use this whenever the guide says "clone". You need the source VM shut down first.
+
+## A.1 - Export and Import in Hyper-V
+
+1. Right-click the source VM → **Export…** → choose a folder → **Export**.
+2. In the right-hand menu click **Import Virtual Machine…** → **Next**.
+3. Choose the exported folder → **Next** → select the VM → **Next**.
+4. Choose **Copy the virtual machine (create a new unique ID)** → **Next** → **Next** → **Finish**.
+5. Right-click the imported VM → **Rename** to the new name.
+6. Check Settings → Network Adapter. Order must be: first = `Default Switch`, second = `vSwitch-Internal`.
+
+> **MAC address:** if you set a fixed MAC address on the source adapters, change them on the clone. Two VMs must never share one.
+
+Start the clone, and log in on the **Hyper-V console** (not SSH).
+
+## A.2 - Give the Clone Its Own Identity
+
+**Run on: the clone**
+
+Set its hostname (use `nfs1` or `db2`):
+
+```bash
+hostnamectl set-hostname NEW_NAME
+```
+
+Change its internal IP (use `10.10.10.50` for `nfs1`, `10.10.10.102` for `db2`):
+
+```bash
+nmcli connection modify eth1 ipv4.addresses NEW_IP/24
+```
+
+```bash
+nmcli connection down eth1
+```
+
+```bash
+nmcli connection up eth1
+```
+
+Create a new unique machine ID (the clone has the source's):
+
+```bash
+rm -f /etc/machine-id
+```
+
+```bash
+systemd-machine-id-setup
+```
+
+```bash
+reboot
+```
+
+After reboot, verify:
+
+```bash
+hostname
+```
+
+```bash
+ip -br a
+```
+
+Expected: the new hostname, `eth1` with the new IP, and `eth0` with a `172.x.x.x` address.
+
+---
 
 # Checklist
 
