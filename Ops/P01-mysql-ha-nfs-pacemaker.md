@@ -1,3 +1,5 @@
+Below is the complete merged Markdown file. It preserves your original document and the updated working document, and only appends the new stickiness/node-preference section at the end.
+
 # P1 - MySQL High Availability (NFS + Pacemaker) on Hyper-V
 
 P1. Self-built setup notes. Builds on [01 - Hyper-V VM Setup](01-hyperv-vm-setup.md) and [06 - Pacemaker Cluster](06-pacemaker-cluster.md).
@@ -3916,3 +3918,679 @@ mysql -h 10.10.10.130 -u root -p123 -e "SELECT * FROM appdb.notes;"
 | MySQL fails after crash with lock error | NFS lock lease not expired | Wait 2 minutes, then `pcs resource cleanup` |
 | VIP unreachable | VIP not started or wrong subnet | Check `pcs status`, `ip -br a`, subnet |
 | Resource shows Failed | Previous failure state | `pcs resource cleanup` |
+
+---
+
+# Appendix B - Pacemaker Resource Stickiness and Node Preference (Additive Section)
+
+This appendix is added without removing anything from the original document or the updated working document.
+
+It uses the resource group name:
+
+```text
+dbgroup
+```
+
+This matches the rest of this document.
+
+---
+
+## B.1 - Why This Section Exists
+
+In a two-node MySQL HA cluster, you may see this behavior:
+
+1. MySQL is running on `db-node1`.
+2. `db-node1` fails.
+3. Pacemaker moves `dbgroup` to `db-node2`.
+4. `db-node1` comes back online.
+5. Pacemaker moves `dbgroup` back to `db-node1`.
+
+That automatic move-back can cause an unnecessary interruption.
+
+For this setup, the preferred behavior is usually:
+
+> If MySQL fails over to `db-node2`, keep it on `db-node2` until an administrator manually moves it back or `db-node2` itself fails.
+
+This is controlled by **resource stickiness**.
+
+---
+
+## B.2 - Recommended Setting for This Setup
+
+Keep resource stickiness at:
+
+```text
+resource-stickiness=1000
+```
+
+This is a strong stability setting for a two-node lab/setup cluster.
+
+Apply it with:
+
+```bash
+pcs resource defaults update resource-stickiness=1000
+```
+
+Verify it:
+
+```bash
+pcs resource defaults
+```
+
+Expected output should include:
+
+```text
+resource-stickiness=1000
+```
+
+If your version of `pcs` uses older syntax, the command may be:
+
+```bash
+pcs resource defaults resource-stickiness=1000
+```
+
+However, in newer PCS versions, use:
+
+```bash
+pcs resource defaults update resource-stickiness=1000
+```
+
+---
+
+## B.3 - What Stickiness Means
+
+Resource stickiness tells Pacemaker how strongly a resource should remain on the node where it is currently running.
+
+| Value | Meaning |
+|---|---|
+| `0` | No preference to stay. Pacemaker may move resources freely. |
+| `100` | Mild preference to stay. Resources may still move back after recovery. |
+| `1000` | Strong preference to stay. Recommended for this setup. |
+| `INFINITY` | Absolute preference. Usually not recommended unless you fully understand the consequences. |
+
+For this MySQL HA setup, use:
+
+```text
+resource-stickiness=1000
+```
+
+This means:
+
+> Keep `dbgroup` on the node where it is currently running unless that node fails or an administrator explicitly moves it.
+
+---
+
+## B.4 - Apply Stickiness Globally
+
+To apply stickiness to all resources in the cluster:
+
+```bash
+pcs resource defaults update resource-stickiness=1000
+```
+
+This is the simplest method and is recommended for this document.
+
+Verify:
+
+```bash
+pcs resource defaults
+```
+
+Expected:
+
+```text
+resource-stickiness=1000
+```
+
+---
+
+## B.5 - Apply Stickiness Directly to `dbgroup`
+
+If you want to make sure the MySQL group itself has stickiness, you can also set it directly on the group:
+
+```bash
+pcs resource meta dbgroup resource-stickiness=1000
+```
+
+Verify the group configuration:
+
+```bash
+pcs resource config dbgroup
+```
+
+Look for:
+
+```text
+resource-stickiness=1000
+```
+
+This is optional if the global default is already set, but it can be useful for clarity.
+
+---
+
+## B.6 - Test That Stickiness Works
+
+### Step 1 - Check current active node
+
+```bash
+pcs status
+```
+
+Note where `dbgroup` is running.
+
+Example:
+
+```text
+Resource Group: dbgroup
+  vip-db       (ocf:heartbeat:IPaddr2):    Started db-node1
+  nfs-mysql    (ocf:heartbeat:Filesystem): Started db-node1
+  pcs-mysql    (ocf:heartbeat:mysql):      Started db-node1
+```
+
+### Step 2 - Put the active node into standby
+
+If `dbgroup` is on `db-node1`:
+
+```bash
+pcs node standby db-node1
+```
+
+Wait for the resources to move to `db-node2`.
+
+Check:
+
+```bash
+pcs status
+```
+
+Expected:
+
+```text
+dbgroup should now be started on db-node2.
+```
+
+### Step 3 - Bring the original node back online
+
+```bash
+pcs node unstandby db-node1
+```
+
+### Step 4 - Check whether resources moved back
+
+```bash
+pcs status
+```
+
+With correct stickiness, the expected behavior is:
+
+```text
+dbgroup remains on db-node2
+```
+
+It should **not** automatically jump back to `db-node1`.
+
+---
+
+## B.7 - If Resources Still Move Back, Check for Hidden Location Constraints
+
+Sometimes Pacemaker appears to ignore stickiness because there is a hidden location constraint.
+
+These constraints are often created when someone runs:
+
+```bash
+pcs resource move dbgroup db-node2
+```
+
+That command can create a temporary constraint similar to:
+
+```text
+cli-prefer-dbgroup
+```
+
+If that constraint has a score of:
+
+```text
+INFINITY
+```
+
+then Pacemaker will force `dbgroup` to stay on or prefer that node, regardless of normal stickiness behavior.
+
+Check location constraints:
+
+```bash
+pcs constraint location --full
+```
+
+Example problematic output:
+
+```text
+Location Constraints:
+  Started resource 'dbgroup' prefers node 'db-node2' with score INFINITY (id: cli-prefer-dbgroup)
+```
+
+If you see this and you do not want to force `dbgroup` to a specific node, delete the constraint:
+
+```bash
+pcs constraint delete cli-prefer-dbgroup
+```
+
+Then clear any leftover manual move state:
+
+```bash
+pcs resource clear dbgroup
+```
+
+Verify again:
+
+```bash
+pcs constraint location --full
+pcs resource defaults
+pcs status
+```
+
+Expected:
+
+```text
+No unwanted cli-prefer-dbgroup constraint
+resource-stickiness=1000
+dbgroup running on one node only
+```
+
+---
+
+## B.8 - Important Rule About Manual Moves
+
+If you manually move the group:
+
+```bash
+pcs resource move dbgroup db-node2
+```
+
+Pacemaker may create a preference constraint.
+
+After testing, if you want normal cluster behavior to return, clear it:
+
+```bash
+pcs resource clear dbgroup
+```
+
+Then check:
+
+```bash
+pcs constraint location --full
+```
+
+If a `cli-prefer-dbgroup` constraint remains and you do not want it, delete it:
+
+```bash
+pcs constraint delete cli-prefer-dbgroup
+```
+
+---
+
+## B.9 - If You Want Pacemaker to Prefer One Node
+
+Sometimes you may want the cluster to prefer one node, for example `db-node1`, when it is healthy.
+
+There are two different meanings of “prefer”:
+
+### Option A - Prefer a node, but do not force resources back
+
+Use a preference score lower than stickiness.
+
+Example:
+
+```bash
+pcs constraint location dbgroup prefers db-node1=500
+```
+
+Because stickiness is `1000`, this usually means:
+
+- If `dbgroup` is not running anywhere yet, Pacemaker may prefer to start it on `db-node1`.
+- If `dbgroup` is already running on `db-node2`, stickiness may keep it there.
+- This is softer and safer.
+
+Check:
+
+```bash
+pcs constraint location --full
+```
+
+Remove later:
+
+```bash
+pcs constraint delete <constraint-id>
+```
+
+You can find the constraint ID from:
+
+```bash
+pcs constraint location --full
+```
+
+---
+
+### Option B - Strongly prefer a node and allow move-back
+
+If you want `db-node1` to win over stickiness when it is healthy, use a score higher than stickiness.
+
+Example:
+
+```bash
+pcs constraint location dbgroup prefers db-node1=2000
+```
+
+This means:
+
+- `db-node1` is preferred strongly.
+- If `db-node1` is online, Pacemaker may move `dbgroup` back to `db-node1`.
+- If `db-node1` fails, `dbgroup` can still fail over to `db-node2`.
+
+This is useful if you want a preferred primary node but still allow failover.
+
+Check:
+
+```bash
+pcs constraint location --full
+```
+
+Remove later:
+
+```bash
+pcs constraint delete <constraint-id>
+```
+
+---
+
+### Option C - Force one node strictly
+
+You can use:
+
+```bash
+pcs constraint location dbgroup prefers db-node1=INFINITY
+```
+
+But this is dangerous for HA.
+
+It may prevent failover because Pacemaker may refuse to run the resource anywhere else.
+
+Do not use `INFINITY` unless you specifically understand the consequence.
+
+For this setup, avoid:
+
+```text
+INFINITY
+```
+
+unless you are intentionally testing strict placement.
+
+---
+
+## B.10 - Recommended Configuration for This Document
+
+For this MySQL HA setup, the recommended configuration is:
+
+```bash
+pcs property set stonith-enabled=false
+pcs property set no-quorum-policy=ignore
+pcs resource defaults update resource-stickiness=1000
+```
+
+Do not add a node preference unless you intentionally want one.
+
+If you do want a soft preferred node, use:
+
+```bash
+pcs constraint location dbgroup prefers db-node1=500
+```
+
+If you want `db-node1` to become preferred again after recovery, use:
+
+```bash
+pcs constraint location dbgroup prefers db-node1=2000
+```
+
+But for simple stability, keep only:
+
+```text
+resource-stickiness=1000
+```
+
+---
+
+## B.11 - Verification Commands
+
+Check global stickiness:
+
+```bash
+pcs resource defaults
+```
+
+Expected:
+
+```text
+resource-stickiness=1000
+```
+
+Check group configuration:
+
+```bash
+pcs resource config dbgroup
+```
+
+Check location constraints:
+
+```bash
+pcs constraint location --full
+```
+
+Check cluster status:
+
+```bash
+pcs status
+```
+
+Check VIP location:
+
+```bash
+ip -br a | grep 10.10.10.130
+```
+
+Check NFS mount:
+
+```bash
+mount | grep dbdata-mysql
+```
+
+Check MySQL process:
+
+```bash
+ps -ef | grep mysqld
+```
+
+Check MySQL listening port:
+
+```bash
+ss -lntp | grep 3306
+```
+
+---
+
+## B.12 - Troubleshooting Stickiness Problems
+
+### Problem: Resources keep moving back to the original node
+
+Likely cause:
+
+```text
+resource-stickiness is too low or not applied
+```
+
+Fix:
+
+```bash
+pcs resource defaults update resource-stickiness=1000
+```
+
+Verify:
+
+```bash
+pcs resource defaults
+```
+
+---
+
+### Problem: Resources are forced to one node unexpectedly
+
+Likely cause:
+
+A hidden location constraint exists, often created by `pcs resource move`.
+
+Check:
+
+```bash
+pcs constraint location --full
+```
+
+Look for something like:
+
+```text
+cli-prefer-dbgroup
+```
+
+If present and unwanted, delete it:
+
+```bash
+pcs constraint delete cli-prefer-dbgroup
+```
+
+Then clear manual move state:
+
+```bash
+pcs resource clear dbgroup
+```
+
+---
+
+### Problem: Stickiness is set, but the resource still moves
+
+Check whether there is a location constraint with a higher score.
+
+Example:
+
+```bash
+pcs constraint location --full
+```
+
+If you see:
+
+```text
+prefers node 'db-node1' with score 2000
+```
+
+and your stickiness is only:
+
+```text
+1000
+```
+
+then the location preference can win.
+
+Decide which behavior you want:
+
+- Want stability? Remove the location preference.
+- Want preferred node? Increase stickiness or lower the preference score.
+
+---
+
+### Problem: You want one preferred node but still want failover
+
+Use a finite preference score.
+
+Example:
+
+```bash
+pcs constraint location dbgroup prefers db-node1=2000
+```
+
+Keep stickiness:
+
+```bash
+pcs resource defaults update resource-stickiness=1000
+```
+
+This allows `db-node1` to be preferred when healthy, but `db-node2` can still take over if `db-node1` fails.
+
+Do not use `INFINITY` unless you want strict placement.
+
+---
+
+## B.13 - Small Note to Add Inside Phase 4
+
+If you want to reference this appendix from the main cluster setup phase, add this note after the cluster properties section:
+
+```markdown
+### Note - Resource Stickiness
+
+For this setup, keep resources stable after failover:
+
+```bash
+pcs resource defaults update resource-stickiness=1000
+```
+
+This prevents `dbgroup` from automatically moving back to the original node after that node recovers.
+
+See Appendix B for details about stickiness, hidden location constraints, and optional node preference.
+```
+
+---
+
+## B.14 - Small Note to Add Inside Phase 5 Verification
+
+Add these commands to the resource verification section:
+
+```bash
+pcs resource defaults
+pcs constraint location --full
+pcs resource config dbgroup
+```
+
+Expected:
+
+```text
+resource-stickiness=1000
+No unwanted cli-prefer-dbgroup constraint unless intentionally configured
+dbgroup contains vip-db, nfs-mysql, and pcs-mysql
+```
+
+---
+
+## B.15 - Checklist Additions
+
+Add these items to your final checklist:
+
+```markdown
+## Resource Placement and Stickiness
+
+- [ ] `pcs resource defaults` shows `resource-stickiness=1000`
+- [ ] `dbgroup` does not automatically move back after the original node recovers
+- [ ] No unwanted location constraint is forcing `dbgroup` to one node
+- [ ] If a preferred node is configured, the constraint score is intentional and documented
+- [ ] After using `pcs resource move`, temporary constraints are cleared or deleted
+- [ ] `pcs constraint location --full` has been checked during troubleshooting
+```
+
+---
+
+## B.16 - Quick Troubleshooting Table Additions
+
+Add these rows to your quick troubleshooting table:
+
+| Symptom | Likely Cause | Fix |
+|---|---|---|
+| Resources move back to original node after recovery | Low or missing resource stickiness | `pcs resource defaults update resource-stickiness=1000` |
+| Resource forced to one node unexpectedly | Hidden location constraint from `pcs resource move` | `pcs constraint location --full`, then delete unwanted `cli-prefer-dbgroup` |
+| Stickiness set but resource still moves | Location preference score is higher than stickiness | Check `pcs constraint location --full`; adjust preference or stickiness |
+| Want preferred node but still allow failover | Need finite location preference | `pcs constraint location dbgroup prefers db-node1=2000` |
+| Want soft preference only | Use preference lower than stickiness | `pcs constraint location dbgroup prefers db-node1=500` |
+| Failover blocked by placement rule | `INFINITY` location constraint used | Remove or reduce the constraint unless strict placement is required |
