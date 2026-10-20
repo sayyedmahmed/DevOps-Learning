@@ -274,10 +274,6 @@ gtid-mode = ON
 enforce-gtid-consistency = ON
 bind-address = 0.0.0.0
 
-sync-binlog = 1
-innodb-flush-log-at-trx-commit = 1
-binlog-expire-logs-seconds = 604800
-max-binlog-size = 100M
 ```
 
 Explanation:
