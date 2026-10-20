@@ -1,13 +1,3 @@
-Below is a **complete, detailed, revised documentation** for your MySQL Master–Slave replication setup, including the **issues we faced**, their **root causes**, and the **proper solutions arranged step by step**.
-
-You can save this as:
-
-```text
-mysql-master-slave-replication-complete.md
-```
-
----
-
 # MySQL Master–Slave Replication on AlmaLinux  
 ## Complete Production Guide using MySQL 8.0 + GTID
 
