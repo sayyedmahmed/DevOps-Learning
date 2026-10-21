@@ -201,6 +201,8 @@ nmcli connection up eth1
 
 **Why no gateway or DNS on eth1?** It only talks to your Windows PC (`10.10.10.1`). `eth0` handles the internet.
 
+> If you deliberately want to set a gateway manually, see **Step 9A**. In the normal setup for this guide, do **not** add a gateway on `eth1`.
+
 > **Now test the internet again:**
 >
 > ```bash
@@ -231,6 +233,208 @@ Bring it up:
 ```bash
 nmcli connection up eth0
 ```
+
+## Step 9A - Optional: Set a Manual Default Gateway Yourself (Static IP)
+
+> Use this only if `eth0` is not getting an IP/gateway automatically, or if you deliberately want a fixed internet IP.  
+> Do **not** set a gateway on `eth1` unless `eth1` is supposed to provide internet. The normal setup keeps `eth1` local-only.
+
+### 1. Find the correct network values
+
+On Windows, check the adapter that provides internet/NAT:
+
+```powershell
+ipconfig
+```
+
+Look for the Hyper-V `Default Switch` or your external switch. You need:
+
+| Value | Example | Where to get it |
+|---|---|---|
+| VM IP address | `172.29.16.50` | Choose an unused address in the same subnet |
+| Subnet prefix | `/20` | Usually shown by Windows or DHCP |
+| Default gateway | `172.29.16.1` | Hyper-V host IP on that switch, or your router IP |
+| DNS servers | `1.1.1.1 8.8.8.8` | Public DNS or your router/LAN DNS |
+
+> If you are using a normal home router/external switch, the gateway is usually your router IP, for example `192.168.1.1`.
+
+### 2. Set the static IP, gateway, and DNS on `eth0`
+
+Replace the example values with yours.
+
+```bash
+nmcli connection modify eth0 ipv4.method manual
+```
+
+```bash
+nmcli connection modify eth0 ipv4.addresses 172.29.16.50/20
+```
+
+```bash
+nmcli connection modify eth0 ipv4.gateway 172.29.16.1
+```
+
+```bash
+nmcli connection modify eth0 ipv4.dns "1.1.1.1 8.8.8.8"
+```
+
+Allow this adapter to be the default internet route:
+
+```bash
+nmcli connection modify eth0 ipv4.never-default no
+```
+
+Start it automatically at boot:
+
+```bash
+nmcli connection modify eth0 connection.autoconnect yes
+```
+
+Apply:
+
+```bash
+nmcli connection down eth0
+```
+
+```bash
+nmcli connection up eth0
+```
+
+### 3. Make sure `eth1` is not adding a second default route
+
+If you previously set a gateway on `eth1`, remove it:
+
+```bash
+nmcli connection modify eth1 ipv4.gateway ""
+```
+
+Keep `eth1` local-only:
+
+```bash
+nmcli connection modify eth1 ipv4.never-default yes
+```
+
+Apply:
+
+```bash
+nmcli connection down eth1
+```
+
+```bash
+nmcli connection up eth1
+```
+
+### 4. Check
+
+```bash
+ip -br a
+```
+
+```bash
+ip route
+```
+
+You should see **one** default route, for example:
+
+```
+default via 172.29.16.1 dev eth0
+```
+
+Then test:
+
+```bash
+ping -c 4 8.8.8.8
+```
+
+```bash
+ping -c 2 google.com
+```
+
+> If you intentionally want `eth1` to be the internet adapter instead of `eth0`, set the gateway on `eth1`, set `eth1 ipv4.never-default no`, and make sure `eth0` is not also providing a default route. That is not the setup used by this guide.
+
+## Step 9B - If `eth0` Is Not Connected From the VM / DHCP Is Not Working
+
+First confirm Hyper-V is actually attaching `eth0` to `Default Switch`:
+
+1. Shut down or pause the VM if needed.
+2. VM Settings → Network Adapter (first) → Virtual switch = `Default Switch`.
+3. Start the VM again.
+
+Inside the VM, check whether NetworkManager sees the device:
+
+```bash
+nmcli device status
+```
+
+If `eth0` is `unmanaged`, `unavailable`, or `disconnected`, try:
+
+```bash
+nmcli connection up eth0
+```
+
+If it still does not get an IP, force `eth0` back to automatic DHCP:
+
+```bash
+nmcli connection modify eth0 ipv4.method auto
+```
+
+Clear any old static IP:
+
+```bash
+nmcli connection modify eth0 ipv4.addresses ""
+```
+
+Clear any old manual gateway:
+
+```bash
+nmcli connection modify eth0 ipv4.gateway ""
+```
+
+Clear any old manual DNS:
+
+```bash
+nmcli connection modify eth0 ipv4.dns ""
+```
+
+Allow DHCP to set the default route:
+
+```bash
+nmcli connection modify eth0 ipv4.never-default no
+```
+
+Autoconnect at boot:
+
+```bash
+nmcli connection modify eth0 connection.autoconnect yes
+```
+
+Apply:
+
+```bash
+nmcli connection down eth0
+```
+
+```bash
+nmcli connection up eth0
+```
+
+Check:
+
+```bash
+ip -br a
+```
+
+```bash
+ip route
+```
+
+If there is still no IP, look at NetworkManager logs:
+
+```bash
+journalctl -u NetworkManager -e
+```
+
+> If you are using only the `Internal` switch, the VM will not have internet unless you add NAT/port forwarding on Windows or attach another adapter to an external/Default switch.
 
 ## Step 10 - Check Everything
 
@@ -429,6 +633,9 @@ When the VM is back, repeat **Step 10**. The IPs, the single default route and t
 | `sshd -t` says `Bad configuration option` | Typo or stray character in the file | Re-create the file with the `printf` command in Step 11 |
 | Password login fails even though `sshd -T` shows `yes` | Plain password auth not accepted | Try the side note in Step 11 (`KbdInteractiveAuthentication yes`) |
 | Log shows `Could not get shadow information` | SELinux blocking SSH | See below |
+| `eth0` gets no IP from `Default Switch` | Hyper-V adapter not attached, DHCP/NAT issue | See Step 9B |
+| Two default routes appear | Gateway set on both NICs | See Step 9A; remove gateway from `eth1` |
+| Static IP has no internet | Wrong gateway/DNS/subnet | Re-check Step 9A values |
 
 ## SELinux blocking SSH login
 
@@ -566,5 +773,8 @@ Expected: the new hostname, `eth1` with the new IP, and `eth0` with a `172.x.x.x
 - [ ] `sshd -T` shows `permitrootlogin yes` and `passwordauthentication yes` (plus `kbdinteractiveauthentication yes` if you used the side note)
 - [ ] MobaXterm connects as `root`
 - [ ] Everything still works after `reboot`
+- [ ] If using DHCP, `eth0` gets its IP and gateway automatically
+- [ ] If using a manual gateway, `eth0` has the correct static IP, gateway, and DNS
+- [ ] If using a manual gateway, `eth1` does not have a gateway and has `ipv4.never-default yes`
 
 **Next:** [02 - LAMP Stack & WordPress](02-lamp-wordpress-installation.md)
