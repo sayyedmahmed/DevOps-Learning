@@ -1,5 +1,3 @@
-Below is the complete merged Markdown file. It preserves your original document and the updated working document, and only appends the new stickiness/node-preference section at the end.
-
 # P1 - MySQL High Availability (NFS + Pacemaker) on Hyper-V
 
 P1. Self-built setup notes. Builds on [01 - Hyper-V VM Setup](01-hyperv-vm-setup.md) and [06 - Pacemaker Cluster](06-pacemaker-cluster.md).
