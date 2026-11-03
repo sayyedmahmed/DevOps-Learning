@@ -360,16 +360,17 @@ curl -k https://site1.local --resolve site1.local:443:127.0.0.1
 
 # 7. Lab Backends (Three Tiny Sites)
 
-For the proxy labs we need "hidden" servers. We just create **three small static sites** that only listen on the server's own loopback address.
+For the proxy labs we need backend servers. We just create **three small static sites** on ports 8081, 8082 and 8083.
+
+> **Your server IP:** this guide uses `10.10.10.210`. Replace it with your own IP (`hostname -I`) everywhere it appears.
 
 ```
-                                  (hidden, reachable only from this server)
-                              +--> Backend 1  127.0.0.1:8081
-   FRONT DOOR :80  ---proxy---|--> Backend 2  127.0.0.1:8082
-   (nginx)                    +--> Backend 3  127.0.0.1:8083
+                              +--> Backend 1  10.10.10.210:8081
+   FRONT DOOR :80  ---proxy---|--> Backend 2  10.10.10.210:8082
+   (nginx)                    +--> Backend 3  10.10.10.210:8083
 ```
 
-## Step 7.1: Prepare SELinux (RHEL family, once)
+## Step 7.1: Prepare SELinux and firewall (RHEL family, once)
 ```bash
 sudo setsebool -P httpd_can_network_connect 1     # lets nginx talk to backends
 sudo dnf install policycoreutils-python-utils -y
@@ -379,7 +380,11 @@ If `semanage` says "already defined", use `-m` instead of `-a`:
 ```bash
 sudo semanage port -m -t http_port_t -p tcp 8081-8083
 ```
-No firewall change is needed for 8081-8083 because they listen only on `127.0.0.1`.
+Open the backend ports in the firewall:
+```bash
+sudo firewall-cmd --permanent --add-port=8081-8083/tcp
+sudo firewall-cmd --reload
+```
 
 ## Step 7.2: Create the three pages
 ```bash
@@ -397,7 +402,7 @@ sudo nano /etc/nginx/conf.d/backend1.conf
 ```
 ```nginx
 server {
-    listen 127.0.0.1:8081;
+    listen 8081;
     root /var/www/b1;
 }
 ```
@@ -406,7 +411,7 @@ sudo nano /etc/nginx/conf.d/backend2.conf
 ```
 ```nginx
 server {
-    listen 127.0.0.1:8082;
+    listen 8082;
     root /var/www/b2;
 }
 ```
@@ -415,21 +420,21 @@ sudo nano /etc/nginx/conf.d/backend3.conf
 ```
 ```nginx
 server {
-    listen 127.0.0.1:8083;
+    listen 8083;
     root /var/www/b3;
 }
 ```
-`listen 127.0.0.1:8081;` means "only accept connections from this same server".
+`listen 8081;` opens port 8081 on the server, so you can also open `http://10.10.10.210:8081` directly in a browser.
 
 ## Step 7.4: Test
 ```bash
 sudo nginx -t
 sudo systemctl reload nginx
-curl http://127.0.0.1:8081
-curl http://127.0.0.1:8082
-curl http://127.0.0.1:8083
+curl http://10.10.10.210:8081
+curl http://10.10.10.210:8082
+curl http://10.10.10.210:8083
 ```
-Expected: `BACKEND 1`, `BACKEND 2`, `BACKEND 3`.
+Expected: `BACKEND 1`, `BACKEND 2`, `BACKEND 3`. You can also open these three addresses in your browser.
 
 ---
 
@@ -438,7 +443,7 @@ Expected: `BACKEND 1`, `BACKEND 2`, `BACKEND 3`.
 **Goal:** port 80 shows a page that really comes from backend 1 on port 8081.
 
 ```
- curl --> nginx :80 --proxy_pass--> 127.0.0.1:8081 (BACKEND 1)
+ curl --> nginx :80 --proxy_pass--> 10.10.10.210:8081 (BACKEND 1)
 ```
 
 ## Step 8.1: Create the front door
@@ -451,7 +456,7 @@ server {
     server_name proxy.local;
 
     location / {
-        proxy_pass http://127.0.0.1:8081;
+        proxy_pass http://10.10.10.210:8081;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
@@ -465,7 +470,7 @@ server {
 | `location /` | Applies to every URL |
 | `proxy_pass` | Where to forward the request |
 | `Host` | Passes the original domain name |
-| `X-Real-IP` | Passes the real visitor IP (otherwise the backend sees only 127.0.0.1) |
+| `X-Real-IP` | Passes the real visitor IP (otherwise the backend sees only the proxy's IP) |
 | `X-Forwarded-For` | List of IPs the request passed through |
 | `X-Forwarded-Proto` | Whether the user used http or https |
 
@@ -483,8 +488,8 @@ server {
     listen 80;
     server_name proxy.local;
 
-    location /one/ { proxy_pass http://127.0.0.1:8081/; }
-    location /two/ { proxy_pass http://127.0.0.1:8082/; }
+    location /one/ { proxy_pass http://10.10.10.210:8081/; }
+    location /two/ { proxy_pass http://10.10.10.210:8082/; }
 }
 ```
 ```
@@ -502,7 +507,7 @@ server {
     ssl_certificate_key /etc/nginx/ssl/site1.key;
 
     location / {
-        proxy_pass http://127.0.0.1:8081;
+        proxy_pass http://10.10.10.210:8081;
         proxy_set_header Host              $host;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
@@ -532,9 +537,9 @@ sudo nano /etc/nginx/conf.d/front.conf
 Replace the content with:
 ```nginx
 upstream mygroup {
-    server 127.0.0.1:8081;
-    server 127.0.0.1:8082;
-    server 127.0.0.1:8083;
+    server 10.10.10.210:8081;
+    server 10.10.10.210:8082;
+    server 10.10.10.210:8083;
 }
 
 server {
@@ -604,31 +609,31 @@ sudo systemctl reload nginx
 ```nginx
 # Weighted
 upstream mygroup {
-    server 127.0.0.1:8081 weight=3;
-    server 127.0.0.1:8082;
+    server 10.10.10.210:8081 weight=3;
+    server 10.10.10.210:8082;
 }
 
 # Least connections
 upstream mygroup {
     least_conn;
-    server 127.0.0.1:8081;
-    server 127.0.0.1:8082;
+    server 10.10.10.210:8081;
+    server 10.10.10.210:8082;
 }
 
 # IP hash
 upstream mygroup {
     ip_hash;
-    server 127.0.0.1:8081;
-    server 127.0.0.1:8082;
+    server 10.10.10.210:8081;
+    server 10.10.10.210:8082;
 }
 ```
 
 ## Step 9.5: Failure handling options
 ```nginx
 upstream mygroup {
-    server 127.0.0.1:8081 max_fails=3 fail_timeout=30s;
-    server 127.0.0.1:8082 max_fails=3 fail_timeout=30s;
-    server 127.0.0.1:8083 backup;
+    server 10.10.10.210:8081 max_fails=3 fail_timeout=30s;
+    server 10.10.10.210:8082 max_fails=3 fail_timeout=30s;
+    server 10.10.10.210:8083 backup;
 }
 ```
 
@@ -658,6 +663,7 @@ sudo systemctl enable --now squid
 The default config already allows the server itself and private networks (`localhost`, `localnet`).
 
 ## Step 10.2: Test from the server
+(`127.0.0.1` simply means "this same server", so we test from the server itself.)
 ```bash
 curl -x http://127.0.0.1:3128 http://example.com
 curl -x http://127.0.0.1:3128 -I https://example.com

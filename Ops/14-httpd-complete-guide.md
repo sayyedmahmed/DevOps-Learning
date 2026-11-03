@@ -386,16 +386,17 @@ curl -k https://site1.local --resolve site1.local:443:127.0.0.1
 
 # 7. Lab Backends (Three Tiny Sites)
 
-For the proxy labs we need "hidden" servers. We create **three small static sites** that only listen on the server's own loopback address.
+For the proxy labs we need backend servers. We create **three small static sites** on ports 8081, 8082 and 8083.
+
+> **Your server IP:** this guide uses `10.10.10.210`. Replace it with your own IP (`hostname -I`) everywhere it appears.
 
 ```
-                                  (hidden, reachable only from this server)
-                              +--> Backend 1  127.0.0.1:8081
-   FRONT DOOR :80  ---proxy---|--> Backend 2  127.0.0.1:8082
-   (httpd)                    +--> Backend 3  127.0.0.1:8083
+                              +--> Backend 1  10.10.10.210:8081
+   FRONT DOOR :80  ---proxy---|--> Backend 2  10.10.10.210:8082
+   (httpd)                    +--> Backend 3  10.10.10.210:8083
 ```
 
-## Step 7.1: Prepare SELinux (once)
+## Step 7.1: Prepare SELinux and firewall (once)
 ```bash
 sudo setsebool -P httpd_can_network_connect 1     # lets httpd talk to backends
 sudo dnf install policycoreutils-python-utils -y
@@ -405,7 +406,11 @@ If `semanage` says "already defined", use `-m` instead of `-a`:
 ```bash
 sudo semanage port -m -t http_port_t -p tcp 8081-8083
 ```
-No firewall change is needed for 8081-8083 because they listen only on `127.0.0.1`.
+Open the backend ports in the firewall:
+```bash
+sudo firewall-cmd --permanent --add-port=8081-8083/tcp
+sudo firewall-cmd --reload
+```
 
 ## Step 7.2: Create the three pages
 ```bash
@@ -425,8 +430,8 @@ In Apache, a new port needs **two things**: a `Listen` line (opens the port) and
 sudo nano /etc/httpd/conf.d/backend1.conf
 ```
 ```apache
-Listen 127.0.0.1:8081
-<VirtualHost 127.0.0.1:8081>
+Listen 8081
+<VirtualHost *:8081>
     DocumentRoot /var/www/b1
     <Directory /var/www/b1>
         Require all granted
@@ -437,8 +442,8 @@ Listen 127.0.0.1:8081
 sudo nano /etc/httpd/conf.d/backend2.conf
 ```
 ```apache
-Listen 127.0.0.1:8082
-<VirtualHost 127.0.0.1:8082>
+Listen 8082
+<VirtualHost *:8082>
     DocumentRoot /var/www/b2
     <Directory /var/www/b2>
         Require all granted
@@ -449,8 +454,8 @@ Listen 127.0.0.1:8082
 sudo nano /etc/httpd/conf.d/backend3.conf
 ```
 ```apache
-Listen 127.0.0.1:8083
-<VirtualHost 127.0.0.1:8083>
+Listen 8083
+<VirtualHost *:8083>
     DocumentRoot /var/www/b3
     <Directory /var/www/b3>
         Require all granted
@@ -462,11 +467,11 @@ Listen 127.0.0.1:8083
 ```bash
 sudo httpd -t
 sudo systemctl restart httpd          # restart, because we added Listen lines
-curl http://127.0.0.1:8081
-curl http://127.0.0.1:8082
-curl http://127.0.0.1:8083
+curl http://10.10.10.210:8081
+curl http://10.10.10.210:8082
+curl http://10.10.10.210:8083
 ```
-Expected: `BACKEND 1`, `BACKEND 2`, `BACKEND 3`.
+Expected: `BACKEND 1`, `BACKEND 2`, `BACKEND 3`. You can also open these three addresses in your browser.
 
 ---
 
@@ -475,7 +480,7 @@ Expected: `BACKEND 1`, `BACKEND 2`, `BACKEND 3`.
 **Goal:** port 80 shows a page that really comes from backend 1 on port 8081.
 
 ```
- curl --> httpd :80 --ProxyPass--> 127.0.0.1:8081 (BACKEND 1)
+ curl --> httpd :80 --ProxyPass--> 10.10.10.210:8081 (BACKEND 1)
 ```
 
 ## Step 8.1: Check the proxy modules
@@ -494,8 +499,8 @@ sudo nano /etc/httpd/conf.d/front.conf
     ServerName proxy.local
 
     ProxyPreserveHost On
-    ProxyPass        / http://127.0.0.1:8081/
-    ProxyPassReverse / http://127.0.0.1:8081/
+    ProxyPass        / http://10.10.10.210:8081/
+    ProxyPassReverse / http://10.10.10.210:8081/
 </VirtualHost>
 ```
 
@@ -521,10 +526,10 @@ Expected: `BACKEND 1`. You asked port 80 but the content came from 8081. **That 
 <VirtualHost *:80>
     ServerName proxy.local
 
-    ProxyPass        /one/ http://127.0.0.1:8081/
-    ProxyPassReverse /one/ http://127.0.0.1:8081/
-    ProxyPass        /two/ http://127.0.0.1:8082/
-    ProxyPassReverse /two/ http://127.0.0.1:8082/
+    ProxyPass        /one/ http://10.10.10.210:8081/
+    ProxyPassReverse /one/ http://10.10.10.210:8081/
+    ProxyPass        /two/ http://10.10.10.210:8082/
+    ProxyPassReverse /two/ http://10.10.10.210:8082/
 </VirtualHost>
 ```
 ```
@@ -543,8 +548,8 @@ Put the more specific path first.
 
     ProxyPreserveHost On
     RequestHeader set X-Forwarded-Proto "https"
-    ProxyPass        / http://127.0.0.1:8081/
-    ProxyPassReverse / http://127.0.0.1:8081/
+    ProxyPass        / http://10.10.10.210:8081/
+    ProxyPassReverse / http://10.10.10.210:8081/
 </VirtualHost>
 ```
 ```
@@ -577,9 +582,9 @@ sudo nano /etc/httpd/conf.d/front.conf
 Replace the content with:
 ```apache
 <Proxy "balancer://mygroup">
-    BalancerMember http://127.0.0.1:8081
-    BalancerMember http://127.0.0.1:8082
-    BalancerMember http://127.0.0.1:8083
+    BalancerMember http://10.10.10.210:8081
+    BalancerMember http://10.10.10.210:8082
+    BalancerMember http://10.10.10.210:8083
     ProxySet lbmethod=byrequests
 </Proxy>
 
@@ -638,8 +643,8 @@ If you see `Service Unavailable`, wait a minute (Apache waits before retrying a 
 
 ```apache
 # Weighted
-BalancerMember http://127.0.0.1:8081 loadfactor=3
-BalancerMember http://127.0.0.1:8082 loadfactor=1
+BalancerMember http://10.10.10.210:8081 loadfactor=3
+BalancerMember http://10.10.10.210:8082 loadfactor=1
 
 # Least busy
 ProxySet lbmethod=bybusyness
@@ -648,9 +653,9 @@ ProxySet lbmethod=bybusyness
 ## Step 9.6: Failure handling options
 ```apache
 <Proxy "balancer://mygroup">
-    BalancerMember http://127.0.0.1:8081 retry=5 timeout=5
-    BalancerMember http://127.0.0.1:8082 retry=5 timeout=5
-    BalancerMember http://127.0.0.1:8083 status=+H
+    BalancerMember http://10.10.10.210:8081 retry=5 timeout=5
+    BalancerMember http://10.10.10.210:8082 retry=5 timeout=5
+    BalancerMember http://10.10.10.210:8083 status=+H
     ProxySet lbmethod=byrequests
 </Proxy>
 ```
@@ -675,6 +680,8 @@ Unlike nginx, **Apache can be a real forward proxy**, including HTTPS tunnelling
 > **Security:** a forward proxy open to everyone will be abused by strangers within hours. **Always restrict who can use it** and never expose it to the whole internet.
 
 ## Step 10.1: Create the config
+(`127.0.0.1` simply means "this same server", so in this lab only the server itself may use the proxy.)
+
 ```bash
 sudo nano /etc/httpd/conf.d/forward.conf
 ```
