@@ -20,6 +20,17 @@ Everything in one place: install, first page, virtual hosts, HTTPS, reverse prox
 > Commands are for **AlmaLinux / RHEL / Rocky**. For Ubuntu/Debian, install with `apt install nginx` and use `ufw` instead of `firewall-cmd`. SELinux steps apply to the RHEL family only.
 > **Golden rule:** after changing a config, run `sudo nginx -t`, then `sudo systemctl reload nginx`.
 
+> **Using vim (quick guide):**
+> 1. Open the file: `sudo vim FILE`
+> 2. Press `i` to start typing (the bottom shows `-- INSERT --`)
+> 3. Type or paste your text (in a terminal, paste with right-click or `Ctrl+Shift+V`)
+> 4. Press `Esc` to stop typing
+> 5. Save and quit: type `:wq` and press `Enter`
+> 6. Quit without saving: `:q!` and `Enter`
+> 7. Delete a whole line: press `Esc`, then `dd`
+> 8. Delete everything in the file: press `Esc`, then `:%d` and `Enter`
+> 9. Tip: before pasting, type `:set paste` and press `Enter`, then press `i`. This stops vim from messing up the indentation
+
 ---
 
 # 1. What is Nginx?
@@ -142,7 +153,7 @@ Open `http://YOUR_SERVER_IP` in a browser. You should see the **"Welcome to ngin
 
 ## Step 3.5: Put your own page
 ```bash
-sudo nano /usr/share/nginx/html/index.html
+sudo vim /usr/share/nginx/html/index.html
 ```
 Paste:
 ```html
@@ -154,7 +165,7 @@ Paste:
 </body>
 </html>
 ```
-Save (`Ctrl+O`, `Enter`, `Ctrl+X`) and refresh the browser. No restart needed.
+Save and quit (`Esc`, then `:wq`, then `Enter`) and refresh the browser. No restart needed.
 
 ---
 
@@ -197,7 +208,7 @@ sudo restorecon -Rv /var/www          # SELinux label (RHEL family)
 
 ## Step 5.2: One config file per site
 ```bash
-sudo nano /etc/nginx/conf.d/site1.conf
+sudo vim /etc/nginx/conf.d/site1.conf
 ```
 ```nginx
 server {
@@ -211,7 +222,7 @@ server {
 }
 ```
 ```bash
-sudo nano /etc/nginx/conf.d/site2.conf
+sudo vim /etc/nginx/conf.d/site2.conf
 ```
 ```nginx
 server {
@@ -398,7 +409,7 @@ sudo restorecon -Rv /var/www
 
 ## Step 7.3: One config file per backend
 ```bash
-sudo nano /etc/nginx/conf.d/backend1.conf
+sudo vim /etc/nginx/conf.d/backend1.conf
 ```
 ```nginx
 server {
@@ -407,7 +418,7 @@ server {
 }
 ```
 ```bash
-sudo nano /etc/nginx/conf.d/backend2.conf
+sudo vim /etc/nginx/conf.d/backend2.conf
 ```
 ```nginx
 server {
@@ -416,7 +427,7 @@ server {
 }
 ```
 ```bash
-sudo nano /etc/nginx/conf.d/backend3.conf
+sudo vim /etc/nginx/conf.d/backend3.conf
 ```
 ```nginx
 server {
@@ -448,7 +459,7 @@ Expected: `BACKEND 1`, `BACKEND 2`, `BACKEND 3`. You can also open these three a
 
 ## Step 8.1: Create the front door
 ```bash
-sudo nano /etc/nginx/conf.d/front.conf
+sudo vim /etc/nginx/conf.d/front.conf
 ```
 ```nginx
 server {
@@ -532,7 +543,7 @@ The backend needs no HTTPS code. Nginx handles it.
 
 ## Step 9.1: Change the front door
 ```bash
-sudo nano /etc/nginx/conf.d/front.conf
+sudo vim /etc/nginx/conf.d/front.conf
 ```
 Replace the content with:
 ```nginx
@@ -672,7 +683,7 @@ sudo tail -n 5 /var/log/squid/access.log
 
 ## Step 10.3: Allow other machines (optional)
 ```bash
-sudo nano /etc/squid/squid.conf
+sudo vim /etc/squid/squid.conf
 ```
 Key lines (use your own network):
 ```

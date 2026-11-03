@@ -21,6 +21,17 @@ Everything in one place: install, first page, virtual hosts, HTTPS, reverse prox
 > Commands are for **AlmaLinux / RHEL / Rocky**, where the package is `httpd`. On Ubuntu/Debian it is `apache2` with different paths (`/etc/apache2/`, `a2ensite`, `a2enmod`). SELinux steps apply to the RHEL family only.
 > **Golden rule:** after changing a config, run `sudo httpd -t`, then `sudo systemctl reload httpd`. If you **add or remove a `Listen` line**, use `restart` instead of `reload`.
 
+> **Using vim (quick guide):**
+> 1. Open the file: `sudo vim FILE`
+> 2. Press `i` to start typing (the bottom shows `-- INSERT --`)
+> 3. Type or paste your text (in a terminal, paste with right-click or `Ctrl+Shift+V`)
+> 4. Press `Esc` to stop typing
+> 5. Save and quit: type `:wq` and press `Enter`
+> 6. Quit without saving: `:q!` and `Enter`
+> 7. Delete a whole line: press `Esc`, then `dd`
+> 8. Delete everything in the file: press `Esc`, then `:%d` and `Enter`
+> 9. Tip: before pasting, type `:set paste` and press `Enter`, then press `i`. This stops vim from messing up the indentation
+
 ---
 
 # 1. What is Apache httpd?
@@ -145,7 +156,7 @@ Open `http://YOUR_SERVER_IP` in a browser. You should see the **Apache test page
 
 ## Step 3.5: Put your own page
 ```bash
-sudo nano /var/www/html/index.html
+sudo vim /var/www/html/index.html
 ```
 Paste:
 ```html
@@ -157,7 +168,7 @@ Paste:
 </body>
 </html>
 ```
-Save (`Ctrl+O`, `Enter`, `Ctrl+X`) and refresh the browser. No restart needed.
+Save and quit (`Esc`, then `:wq`, then `Enter`) and refresh the browser. No restart needed.
 
 ---
 
@@ -203,7 +214,7 @@ sudo restorecon -Rv /var/www          # SELinux label
 
 ## Step 5.2: One config file per site
 ```bash
-sudo nano /etc/httpd/conf.d/site1.conf
+sudo vim /etc/httpd/conf.d/site1.conf
 ```
 ```apache
 <VirtualHost *:80>
@@ -220,7 +231,7 @@ sudo nano /etc/httpd/conf.d/site1.conf
 </VirtualHost>
 ```
 ```bash
-sudo nano /etc/httpd/conf.d/site2.conf
+sudo vim /etc/httpd/conf.d/site2.conf
 ```
 ```apache
 <VirtualHost *:80>
@@ -427,7 +438,7 @@ sudo restorecon -Rv /var/www
 In Apache, a new port needs **two things**: a `Listen` line (opens the port) and a `<VirtualHost>` (says what to show).
 
 ```bash
-sudo nano /etc/httpd/conf.d/backend1.conf
+sudo vim /etc/httpd/conf.d/backend1.conf
 ```
 ```apache
 Listen 8081
@@ -439,7 +450,7 @@ Listen 8081
 </VirtualHost>
 ```
 ```bash
-sudo nano /etc/httpd/conf.d/backend2.conf
+sudo vim /etc/httpd/conf.d/backend2.conf
 ```
 ```apache
 Listen 8082
@@ -451,7 +462,7 @@ Listen 8082
 </VirtualHost>
 ```
 ```bash
-sudo nano /etc/httpd/conf.d/backend3.conf
+sudo vim /etc/httpd/conf.d/backend3.conf
 ```
 ```apache
 Listen 8083
@@ -492,7 +503,7 @@ You should see `proxy_module`, `proxy_http_module`, `proxy_balancer_module`, `pr
 
 ## Step 8.2: Create the front door
 ```bash
-sudo nano /etc/httpd/conf.d/front.conf
+sudo vim /etc/httpd/conf.d/front.conf
 ```
 ```apache
 <VirtualHost *:80>
@@ -577,7 +588,7 @@ You need `proxy_balancer_module` and `lbmethod_byrequests_module` (enabled by de
 
 ## Step 9.2: Change the front door
 ```bash
-sudo nano /etc/httpd/conf.d/front.conf
+sudo vim /etc/httpd/conf.d/front.conf
 ```
 Replace the content with:
 ```apache
@@ -683,7 +694,7 @@ Unlike nginx, **Apache can be a real forward proxy**, including HTTPS tunnelling
 (`127.0.0.1` simply means "this same server", so in this lab only the server itself may use the proxy.)
 
 ```bash
-sudo nano /etc/httpd/conf.d/forward.conf
+sudo vim /etc/httpd/conf.d/forward.conf
 ```
 ```apache
 Listen 3128
