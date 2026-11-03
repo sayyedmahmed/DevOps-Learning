@@ -499,8 +499,21 @@ server {
     listen 80;
     server_name proxy.local;
 
-    location /one/ { proxy_pass http://10.10.10.210:8081/; }
-    location /two/ { proxy_pass http://10.10.10.210:8082/; }
+    location /one/ { 
+        proxy_pass http://10.10.10.210:8081/; 
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /two/ { 
+        proxy_pass http://10.10.10.210:8082/; 
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 }
 ```
 ```
