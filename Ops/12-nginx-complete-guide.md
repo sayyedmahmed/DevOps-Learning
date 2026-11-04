@@ -1,316 +1,190 @@
-# Nginx Complete Beginner Guide
+# Enterprise Nginx Infrastructure and Proxy Configuration Reference
 
-Everything in one place: install, first page, virtual hosts, HTTPS, reverse proxy, load balancing, forward proxy. All labs use **simple static web pages**, nothing else to install.
+This document outlines the standard operating procedures, architecture patterns, and configuration standards for deploying Nginx as a web server, reverse proxy, and load balancer within an enterprise infrastructure. It also covers the deployment of Squid for forward proxy requirements.
 
-**Contents**
+## Table of Contents
 
-1. What is Nginx?
-2. Proxy concepts in plain words
-3. Install, start and first page
-4. Important files and commands
-5. Virtual hosts (multiple sites)
-6. HTTPS
-7. Lab backends (three tiny sites)
-8. Reverse proxy
-9. Load balancing
-10. Forward proxy
-11. Troubleshooting
-12. Cheat sheet
-
-> Commands are for **AlmaLinux / RHEL / Rocky**. For Ubuntu/Debian, install with `apt install nginx` and use `ufw` instead of `firewall-cmd`. SELinux steps apply to the RHEL family only.
-> **Golden rule:** after changing a config, run `sudo nginx -t`, then `sudo systemctl reload nginx`.
-
-> **Using vim (quick guide):**
-> 1. Open the file: `sudo vim FILE`
-> 2. Press `i` to start typing (the bottom shows `-- INSERT --`)
-> 3. Type or paste your text (in a terminal, paste with right-click or `Ctrl+Shift+V`)
-> 4. Press `Esc` to stop typing
-> 5. Save and quit: type `:wq` and press `Enter`
-> 6. Quit without saving: `:q!` and `Enter`
-> 7. Delete a whole line: press `Esc`, then `dd`
-> 8. Delete everything in the file: press `Esc`, then `:%d` and `Enter`
-> 9. Tip: before pasting, type `:set paste` and press `Enter`, then press `i`. This stops vim from messing up the indentation
+- [1. Architecture and Proxy Concepts](#1-architecture-and-proxy-concepts)
+- [2. Installation and Service Management](#2-installation-and-service-management)
+- [3. Core Configuration and File Management](#3-core-configuration-and-file-management)
+- [4. Virtual Host Implementation](#4-virtual-host-implementation)
+- [5. HTTPS and TLS Configuration](#5-https-and-tls-configuration)
+- [6. Backend Infrastructure Preparation](#6-backend-infrastructure-preparation)
+- [7. Reverse Proxy Configuration](#7-reverse-proxy-configuration)
+- [8. Load Balancing Implementation](#8-load-balancing-implementation)
+- [9. Advanced Load Balancing Strategies](#9-advanced-load-balancing-strategies)
+- [10. Forward Proxy Implementation (Squid)](#10-forward-proxy-implementation-squid)
+- [11. Troubleshooting and Diagnostics](#11-troubleshooting-and-diagnostics)
+- [12. Quick Reference](#12-quick-reference)
 
 ---
 
-# 1. What is Nginx?
+## 1. Architecture and Proxy Concepts
 
-**Nginx** (say "engine-x") is a **web server**. It waits for browsers to ask for pages and sends them back. It can also act as a reverse proxy and load balancer.
+### 1.1 Core Definitions
+| Component | Definition |
+| :--- | :--- |
+| **Web Server** | Application that processes HTTP/HTTPS requests and serves static or dynamic content. |
+| **Document Root** | The designated filesystem directory where web assets are stored. |
+| **Virtual Host** | A configuration mechanism allowing a single Nginx instance to serve multiple domains based on the `Host` header. |
+| **Forward Proxy** | An intermediary for client requests to external servers. Clients are aware of the proxy; destination servers are not. |
+| **Reverse Proxy** | An intermediary for incoming client requests to backend servers. Clients are unaware of the backend topology. |
+| **Load Balancer** | A specialized reverse proxy that distributes incoming traffic across multiple backend nodes to ensure high availability and scalability. |
 
-```
-  Browser                              SERVER (nginx)
- +--------------+   "give me the     +----------------------+
- |  Chrome      |    page" (HTTP)    |  nginx               |
- |              | -----------------> |    |                 |
- |              | <----------------- |    v                 |
- +--------------+   sends index.html |  /usr/share/nginx/   |
-                                     |  html/index.html     |
-                                     +----------------------+
-```
+### 1.2 Architectural Diagrams
 
-| Word | Meaning |
-|---|---|
-| Web server | Program that sends web pages |
-| Document root | Folder where the site's files live |
-| `index.html` | The default page shown |
-| Port 80 / 443 | Doors for HTTP / HTTPS |
-| Config file | Text file that controls nginx |
-
----
-
-# 2. Proxy Concepts in Plain Words
-
-A **proxy** is a **middleman**.
-
-## Forward proxy: middleman for the USERS
-
-```
-  Users                  FORWARD PROXY               Internet
- +------+                +-----------+             +-----------+
- | PC 1 |--+             |           |------------>| websites  |
- | PC 2 |--+------------>|   proxy   |             +-----------+
- | PC 3 |--+             |           |
- +------+                +-----------+
- Users KNOW about it. Websites only see the proxy.
-```
-Use: filter sites, cache, hide user IPs.
-
-## Reverse proxy: middleman for the SERVERS
-
-```
-  Users                 REVERSE PROXY              Hidden servers
- +------+               +-----------+              +-----------+
- | User |-------------->|   proxy   |------------->|  backend  |
- +------+               +-----------+              +-----------+
- Users do NOT know the backend exists.
-```
-Use: hide servers, HTTPS in one place, load balancing.
-
-## Load balancer: reverse proxy with MANY servers behind
-
-```
-                          +--> Backend 1
-  Users --> LOAD BALANCER |--> Backend 2
-                          +--> Backend 3
-```
-Use: share the work, and keep running if one server dies.
-
-## Virtual host (server block)
-
-One nginx serving many websites, chosen by the **domain name** in the request.
-
-```
-                        +--> site1.local --> /var/www/site1
-  Browser --> nginx :80 |
-                        +--> site2.local --> /var/www/site2
+**Standard Web Server Flow**
+```text
+  Browser                              SERVER (Nginx)
+ +--------------+   "HTTP Request"    +----------------------+
+ |  Client      | ------------------> |  Nginx               |
+ |              | <------------------ |    |                 |
+ +--------------+   "HTTP Response"   |    v                 |
+                                      |  /usr/share/nginx/   |
+                                      |  html/index.html     |
+                                      +----------------------+
 ```
 
-## HTTPS
-
-HTTP + encryption (TLS). A certificate proves who the site is.
+**Reverse Proxy Flow**
+```text
+       Client Browser
+            |
+            |  Request to Port 80/443
+            v
+      +-------------+
+      |   Nginx     |  <-- Reverse Proxy (front.conf / lb.conf)
+      |  (Port 80)  |
+      +-------------+
+            |
+            |  Forwards request internally
+            v
+      +-------------+
+      |  Backend    |  <-- Application Server (e.g., Port 8081)
+      | (Port 8081) |
+      +-------------+
 ```
- HTTP  (80):   Browser --- readable text ---> Server
- HTTPS (443):  Browser === encrypted ========> Server
+
+**Load Balancer Topology**
+```text
+                          +--> Backend Node 1 (10.10.10.210:8081)
+  Clients --> Nginx :80 --|--> Backend Node 2 (10.10.10.210:8082)
+                          +--> Backend Node 3 (10.10.10.210:8083)
 ```
 
 ---
 
-# 3. Install, Start and First Page
+## 2. Installation and Service Management
 
-## Step 3.1: Install
+### 2.1 Package Installation
+Execute the following commands to install Nginx on RHEL/AlmaLinux/Rocky systems:
 ```bash
 sudo dnf install nginx -y
 nginx -v
 ```
 
-## Step 3.2: Start
+### 2.2 Service Control
+Enable the service to start on boot and initiate the daemon:
 ```bash
 sudo systemctl enable --now nginx
 sudo systemctl status nginx
 ```
 
-| Command | What it does |
-|---|---|
-| `systemctl start nginx` | Start |
-| `systemctl stop nginx` | Stop |
-| `systemctl restart nginx` | Stop and start |
-| `systemctl reload nginx` | Apply config changes gently |
-| `systemctl enable nginx` | Start on boot |
+| Command | Function |
+| :--- | :--- |
+| `systemctl start nginx` | Initiates the service. |
+| `systemctl stop nginx` | Halts the service. |
+| `systemctl restart nginx` | Performs a hard stop and start. |
+| `systemctl reload nginx` | Gracefully applies configuration changes without dropping connections. |
 
-## Step 3.3: Open the firewall
+### 2.3 Firewall Configuration
+Permit inbound HTTP and HTTPS traffic via `firewalld`:
 ```bash
 sudo firewall-cmd --permanent --add-service=http
 sudo firewall-cmd --permanent --add-service=https
 sudo firewall-cmd --reload
 ```
 
-## Step 3.4: Test
-```bash
-hostname -I
-curl -I http://localhost
-```
-Open `http://YOUR_SERVER_IP` in a browser. You should see the **"Welcome to nginx"** page.
+---
 
-## Step 3.5: Put your own page
+## 3. Core Configuration and File Management
+
+### 3.1 Directory Structure
+| Path | Purpose |
+| :--- | :--- |
+| `/etc/nginx/nginx.conf` | Main global configuration file. |
+| `/etc/nginx/conf.d/*.conf` | Modular configuration directory. Only files ending in `.conf` are loaded. |
+| `/usr/share/nginx/html/` | Default document root for the base installation. |
+| `/var/log/nginx/` | Directory containing `access.log` and `error.log`. |
+
+### 3.2 Configuration Workflow
+**Golden Rule:** Always validate syntax before applying changes.
 ```bash
-sudo vim /usr/share/nginx/html/index.html
+sudo nginx -t
+sudo systemctl reload nginx
 ```
-Paste:
-```html
-<!DOCTYPE html>
-<html>
-<head><title>My Nginx Page</title></head>
-<body style="font-family:Arial;text-align:center;margin-top:80px">
-  <h1>Hello from Nginx!</h1>
-</body>
-</html>
-```
-Save and quit (`Esc`, then `:wq`, then `Enter`) and refresh the browser. No restart needed.
+
+### 3.3 Enterprise Vim Operations
+When modifying configuration files via `vim`, utilize the following operational shortcuts:
+- **Insert Mode:** Press `i`.
+- **Save and Quit:** Press `Esc`, type `:wq`, press `Enter`.
+- **Discard Changes:** Press `Esc`, type `:q!`, press `Enter`.
+- **Clear File Contents:** Press `Esc`, type `:%d`, press `Enter`.
+- **Block Commenting (Multiple Lines):**
+  1. Press `Esc` and navigate to the target block.
+  2. Press `Ctrl+v` to enter Visual Block mode.
+  3. Use arrow keys to highlight the lines.
+  4. Press `Shift+i` (capital I) to enter Insert mode.
+  5. Type `#` and press `Esc` twice. The comment character will apply to all selected lines.
 
 ---
 
-# 4. Important Files and Commands
+## 4. Virtual Host Implementation
 
-```
- /etc/nginx/
-   |-- nginx.conf          <- main config
-   |-- conf.d/*.conf       <- your configs (auto-included, only *.conf)
- /usr/share/nginx/html/    <- default web folder (RHEL)
- /var/log/nginx/
-   |-- access.log          <- who visited
-   |-- error.log           <- what went wrong
-```
+Virtual hosts (server blocks) allow a single Nginx instance to route traffic to different document roots based on the requested domain name.
 
-| Task | Command |
-|---|---|
-| Test config | `sudo nginx -t` |
-| Show full loaded config | `sudo nginx -T` |
-| Reload | `sudo systemctl reload nginx` |
-| See listening ports | `sudo ss -tlnp \| grep nginx` |
-| Live access log | `sudo tail -f /var/log/nginx/access.log` |
-
-> Files in `conf.d` load **only if they end in `.conf`**. Renaming one to `.off` or `.txt` switches it off.
-
----
-
-# 5. Virtual Hosts
-
-**Goal:** `site1.local` and `site2.local` from one nginx.
-
-## Step 5.1: Create folders and pages
+### 4.1 Directory and Asset Preparation
 ```bash
 sudo mkdir -p /var/www/site1 /var/www/site2
-echo '<h1>This is SITE 1</h1>' | sudo tee /var/www/site1/index.html
-echo '<h1>This is SITE 2</h1>' | sudo tee /var/www/site2/index.html
+echo '<h1>Application: Site 1</h1>' | sudo tee /var/www/site1/index.html
+echo '<h1>Application: Site 2</h1>' | sudo tee /var/www/site2/index.html
 sudo chmod -R 755 /var/www
-sudo restorecon -Rv /var/www          # SELinux label (RHEL family)
+sudo restorecon -Rv /var/www  # Enforces SELinux contexts
 ```
 
-## Step 5.2: One config file per site
-```bash
-sudo vim /etc/nginx/conf.d/site1.conf
-```
+### 4.2 Server Block Configuration
+Create `/etc/nginx/conf.d/site1.conf`:
 ```nginx
 server {
     listen 80;
     server_name site1.local;
     root /var/www/site1;
     index index.html;
-
     access_log /var/log/nginx/site1.access.log;
     error_log  /var/log/nginx/site1.error.log;
 }
 ```
-```bash
-sudo vim /etc/nginx/conf.d/site2.conf
-```
-```nginx
-server {
-    listen 80;
-    server_name site2.local;
-    root /var/www/site2;
-    index index.html;
+*(Repeat for `site2.conf` adjusting paths and `server_name` accordingly).*
 
-    access_log /var/log/nginx/site2.access.log;
-    error_log  /var/log/nginx/site2.error.log;
-}
-```
-
-| Line | Meaning |
-|---|---|
-| `server { }` | One website |
-| `listen 80;` | Port to open |
-| `server_name` | Domain this site answers to |
-| `root` | Folder with the files |
-| `access_log` / `error_log` | Separate logs per site |
-
-## Step 5.3: Test and reload
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-## Step 5.4: Make the names work
-
-From the server:
-```bash
-curl -H "Host: site1.local" http://localhost
-curl -H "Host: site2.local" http://localhost
-```
-From your PC's browser, add this line to its hosts file (`/etc/hosts` on Linux/Mac; on Windows `C:\Windows\System32\drivers\etc\hosts` opened as Administrator):
-```
-SERVER_IP   site1.local site2.local
-```
-
-## Step 5.5: How nginx picks a site
-```
- Request with  Host: site2.local
-        |
-        v
- Look for a matching server_name
-        |
-  match? --yes--> use that server block
-        |
-        no
-        v
- use the default server (first one, or marked default_server)
+### 4.3 DNS and Host Resolution
+For internal routing without public DNS, append the following to the client machine's `/etc/hosts` (Linux/Mac) or `C:\Windows\System32\drivers\etc\hosts` (Windows):
+```text
+<SERVER_IP>   site1.local site2.local
 ```
 
 ---
 
-# 6. HTTPS
+## 5. HTTPS and TLS Configuration
 
-| Route | Use when |
-|---|---|
-| **6A Let's Encrypt** | Real public domain pointing to a public server |
-| **6B Self-signed** | Lab / private network (browser shows a warning) |
-
-## 6A. Let's Encrypt (certbot)
-
-**Requirements, all of them:**
-- You own a domain (e.g. `example.com`) with an A record pointing to your server's public IP.
-- Ports 80 and 443 reachable from the internet.
-- A server block with `server_name example.com;`.
-
-> Let's Encrypt cannot issue certificates for `.local` names or private IPs. Use 6B for those.
-
+### 5.1 Let's Encrypt (Public Domains)
+Requires a valid public domain and open ports 80/443.
 ```bash
 sudo dnf install epel-release -y
 sudo dnf install certbot python3-certbot-nginx -y
 sudo certbot --nginx -d example.com -d www.example.com
 ```
-Answer the prompts (email, terms) and choose to **redirect HTTP to HTTPS**. Certbot edits nginx's config and reloads it.
 
-Renewal (certificates last 90 days and renew automatically):
-```bash
-sudo systemctl list-timers | grep certbot
-sudo certbot renew --dry-run
-sudo certbot certificates
-```
-
-## 6B. Self-signed certificate (lab)
-
-### Step 1: Create the certificate
+### 5.2 Self-Signed Certificates (Internal Infrastructure)
+Generate the cryptographic material:
 ```bash
 sudo mkdir -p /etc/nginx/ssl
 sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
@@ -321,146 +195,62 @@ sudo chmod 600 /etc/nginx/ssl/site1.key
 sudo restorecon -Rv /etc/nginx/ssl
 ```
 
-| Option | Meaning |
-|---|---|
-| `-x509` | Make a certificate directly |
-| `-nodes` | No password on the key |
-| `-days 365` | Valid one year |
-| `-keyout` / `-out` | Private key (secret) / public certificate |
-| `-subj "/CN=..."` | The site name |
-
-### Step 2: Update `/etc/nginx/conf.d/site1.conf`
+**HTTPS Server Block Implementation:**
 ```nginx
-# Redirect HTTP to HTTPS
 server {
     listen 80;
     server_name site1.local;
     return 301 https://$host$request_uri;
 }
 
-# The HTTPS site
 server {
     listen 443 ssl;
     server_name site1.local;
-
     ssl_certificate     /etc/nginx/ssl/site1.crt;
     ssl_certificate_key /etc/nginx/ssl/site1.key;
     ssl_protocols       TLSv1.2 TLSv1.3;
-
     root /var/www/site1;
     index index.html;
 }
 ```
 
-| Line | Meaning |
-|---|---|
-| `return 301 https://...` | Permanent redirect to HTTPS |
-| `listen 443 ssl;` | HTTPS port with TLS |
-| `ssl_certificate` | Public certificate |
-| `ssl_certificate_key` | Private key |
-
-### Step 3: Test
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
-curl -k https://site1.local --resolve site1.local:443:127.0.0.1
-```
-`-k` accepts the self-signed certificate. A browser will warn; click Advanced, then Proceed.
-
 ---
 
-# 7. Lab Backends (Three Tiny Sites)
+## 6. Backend Infrastructure Preparation
 
-For the proxy labs we need backend servers. We just create **three small static sites** on ports 8081, 8082 and 8083.
+When configuring Nginx as a reverse proxy, backend application servers must be prepared to accept internal traffic.
 
-> **Your server IP:** this guide uses `10.10.10.210`. Replace it with your own IP (`hostname -I`) everywhere it appears.
-
-```
-                              +--> Backend 1  10.10.10.210:8081
-   FRONT DOOR :80  ---proxy---|--> Backend 2  10.10.10.210:8082
-   (nginx)                    +--> Backend 3  10.10.10.210:8083
-```
-
-## Step 7.1: Prepare SELinux and firewall (RHEL family, once)
+### 6.1 SELinux and Firewall Adjustments
+Permit Nginx to initiate outbound network connections to backend ports:
 ```bash
-sudo setsebool -P httpd_can_network_connect 1     # lets nginx talk to backends
+sudo setsebool -P httpd_can_network_connect 1
 sudo dnf install policycoreutils-python-utils -y
 sudo semanage port -a -t http_port_t -p tcp 8081-8083
 ```
-If `semanage` says "already defined", use `-m` instead of `-a`:
-```bash
-sudo semanage port -m -t http_port_t -p tcp 8081-8083
-```
-Open the backend ports in the firewall:
+*Note: If the port range is already defined, use `-m` (modify) instead of `-a` (add).*
+
+Open backend ports in the local firewall:
 ```bash
 sudo firewall-cmd --permanent --add-port=8081-8083/tcp
 sudo firewall-cmd --reload
 ```
 
-## Step 7.2: Create the three pages
-```bash
-for i in 1 2 3; do
-  sudo mkdir -p /var/www/b$i
-  echo "BACKEND $i" | sudo tee /var/www/b$i/index.html
-done
-sudo chmod -R 755 /var/www
-sudo restorecon -Rv /var/www
-```
-
-## Step 7.3: One config file per backend
-```bash
-sudo vim /etc/nginx/conf.d/backend1.conf
-```
+### 6.2 Backend Server Blocks
+Define isolated listeners for each backend node (e.g., `/etc/nginx/conf.d/backend1.conf`):
 ```nginx
 server {
     listen 8081;
     root /var/www/b1;
 }
 ```
-```bash
-sudo vim /etc/nginx/conf.d/backend2.conf
-```
-```nginx
-server {
-    listen 8082;
-    root /var/www/b2;
-}
-```
-```bash
-sudo vim /etc/nginx/conf.d/backend3.conf
-```
-```nginx
-server {
-    listen 8083;
-    root /var/www/b3;
-}
-```
-`listen 8081;` opens port 8081 on the server, so you can also open `http://10.10.10.210:8081` directly in a browser.
-
-## Step 7.4: Test
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
-curl http://10.10.10.210:8081
-curl http://10.10.10.210:8082
-curl http://10.10.10.210:8083
-```
-Expected: `BACKEND 1`, `BACKEND 2`, `BACKEND 3`. You can also open these three addresses in your browser.
 
 ---
 
-# 8. Reverse Proxy
+## 7. Reverse Proxy Configuration
 
-**Goal:** port 80 shows a page that really comes from backend 1 on port 8081.
+### 7.1 Standard Reverse Proxy
+To route all traffic for a specific domain to a single backend, create a configuration file (e.g., `/etc/nginx/conf.d/proxy.conf`):
 
-```
- curl --> nginx :80 --proxy_pass--> 10.10.10.210:8081 (BACKEND 1)
-```
-
-## Step 8.1: Create the front door
-```bash
-sudo vim /etc/nginx/conf.d/front.conf
-```
 ```nginx
 server {
     listen 80;
@@ -475,40 +265,26 @@ server {
     }
 }
 ```
+*The `proxy_set_header` directives are critical for maintaining client IP transparency and protocol awareness at the backend application layer.*
 
-| Line | Meaning |
-|---|---|
-| `location /` | Applies to every URL |
-| `proxy_pass` | Where to forward the request |
-| `Host` | Passes the original domain name |
-| `X-Real-IP` | Passes the real visitor IP (otherwise the backend sees only the proxy's IP) |
-| `X-Forwarded-For` | List of IPs the request passed through |
-| `X-Forwarded-Proto` | Whether the user used http or https |
+### 7.2 Path-Based Routing (Best Practice)
+To route different URL paths to distinct backend services while maintaining header transparency:
 
-## Step 8.2: Test
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
-curl -H "Host: proxy.local" http://localhost
-```
-Expected: `BACKEND 1`. You asked port 80 but the content came from 8081. **That is a reverse proxy.**
-
-## Step 8.3: Different paths to different backends
 ```nginx
 server {
     listen 80;
     server_name proxy.local;
 
-    location /one/ { 
-        proxy_pass http://10.10.10.210:8081/; 
+    location /one/ {
+        proxy_pass http://10.10.10.210:8081/;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    location /two/ { 
-        proxy_pass http://10.10.10.210:8082/; 
+    location /two/ {
+        proxy_pass http://10.10.10.210:8082/;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
@@ -516,49 +292,16 @@ server {
     }
 }
 ```
-```
- /one/  --> BACKEND 1
- /two/  --> BACKEND 2
-```
-The trailing `/` on `proxy_pass` strips the `/one/` part before forwarding.
-
-## Step 8.4: HTTPS in front of a backend (TLS termination)
-```nginx
-server {
-    listen 443 ssl;
-    server_name proxy.local;
-    ssl_certificate     /etc/nginx/ssl/site1.crt;
-    ssl_certificate_key /etc/nginx/ssl/site1.key;
-
-    location / {
-        proxy_pass http://10.10.10.210:8081;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-```
- Browser ==== HTTPS ====> nginx ---- plain HTTP ----> Backend
-```
-The backend needs no HTTPS code. Nginx handles it.
+*Note: The trailing slash in `proxy_pass` strips the matched location prefix before forwarding the request to the backend.*
 
 ---
 
-# 9. Load Balancing
+## 8. Load Balancing Implementation
 
-**Goal:** the front door spreads requests over all three backends.
+### 8.1 Upstream Configuration
+Define an upstream group and route traffic via the proxy module. Standard naming convention dictates using `lb.conf` for load balancer configurations.
 
-```
-                          +--> BACKEND 1
- Browser --> nginx :80 ---|--> BACKEND 2
-                          +--> BACKEND 3
-```
-
-## Step 9.1: Change the front door
-```bash
-sudo vim /etc/nginx/conf.d/front.conf
-```
-Replace the content with:
+Create `/etc/nginx/conf.d/lb.conf`:
 ```nginx
 upstream mygroup {
     server 10.10.10.210:8081;
@@ -578,81 +321,43 @@ server {
     }
 }
 ```
-`upstream mygroup { }` is a named list of backends. `proxy_pass http://mygroup;` sends traffic to the list.
 
+### 8.2 Resolving Default Server Conflicts
+If accessing the server via IP address yields the default OS welcome page instead of the application, the default server block in `/etc/nginx/nginx.conf` is intercepting the traffic.
+
+**Resolution:**
+1. Open `/etc/nginx/nginx.conf`.
+2. Locate the default `server` block at the bottom of the `http` context (typically listening on `[::]:80` with `server_name _;`).
+3. Comment out the entire block using the Vim Visual Block method (`Ctrl+v`, select, `Shift+i`, `#`).
+4. Reload Nginx.
+
+### 8.3 Verification and Testing
+**Terminal Verification:**
+Execute a loop to verify Round Robin distribution. Using the IP address with the `Host` header is the most reliable testing method.
 ```bash
-sudo nginx -t
-sudo systemctl reload nginx
+for i in 1 2 3 4 5 6; do curl -s -H "Host: proxy.local" http://10.10.10.210; done
 ```
 
-## Step 9.2: Watch it balance
-```bash
-for i in 1 2 3 4 5 6; do curl -s -H "Host: proxy.local" http://localhost; done
-```
-Expected (taking turns, called **round robin**):
-```
-BACKEND 1
-BACKEND 2
-BACKEND 3
-BACKEND 1
-BACKEND 2
-BACKEND 3
-```
+**Browser Verification and Caching:**
+Web browsers aggressively cache HTTP responses. If the browser displays only one backend node despite terminal verification showing rotation:
+- Open an **Incognito/Private** browsing window.
+- Perform a **Hard Refresh** (`Ctrl+Shift+R` or `Cmd+Shift+R`).
+- Ensure the client `/etc/hosts` file maps `proxy.local` to the server IP.
 
-## Step 9.3: Break a backend
-```bash
-sudo mv /etc/nginx/conf.d/backend2.conf /etc/nginx/conf.d/backend2.off
-sudo systemctl reload nginx
-for i in 1 2 3 4 5 6; do curl -s -H "Host: proxy.local" http://localhost; done
-```
-Backend 2 never answers, and users see no error:
-```
-BACKEND 1
-BACKEND 3
-BACKEND 1
-BACKEND 3
-...
-```
-(The first request or two may be slower while nginx notices backend 2 is down.)
+---
 
-Bring it back:
-```bash
-sudo mv /etc/nginx/conf.d/backend2.off /etc/nginx/conf.d/backend2.conf
-sudo systemctl reload nginx
-```
+## 9. Advanced Load Balancing Strategies
 
-## Step 9.4: Balancing methods
+### 9.1 Distribution Algorithms
+| Algorithm | Directive | Use Case |
+| :--- | :--- | :--- |
+| **Round Robin** | *(Default)* | Standard distribution across homogeneous nodes. |
+| **Weighted** | `weight=3;` | Directing proportional traffic to higher-capacity nodes. |
+| **Least Connections** | `least_conn;` | Optimal for long-lived connections or varying request processing times. |
+| **IP Hash** | `ip_hash;` | Ensures session persistence by binding client IPs to specific backends. |
 
-| Method | How to enable | Meaning | Use when |
-|---|---|---|---|
-| Round robin | (default) | Takes turns | Servers are equal |
-| Weighted | `server ... weight=3;` | Stronger server gets more | Servers differ in power |
-| Least connections | `least_conn;` | Goes to the least busy | Requests take different times |
-| IP hash | `ip_hash;` | Same visitor, same backend | Sessions stored on the server |
-
-```nginx
-# Weighted
-upstream mygroup {
-    server 10.10.10.210:8081 weight=3;
-    server 10.10.10.210:8082;
-}
-
-# Least connections
-upstream mygroup {
-    least_conn;
-    server 10.10.10.210:8081;
-    server 10.10.10.210:8082;
-}
-
-# IP hash
-upstream mygroup {
-    ip_hash;
-    server 10.10.10.210:8081;
-    server 10.10.10.210:8082;
-}
-```
-
-## Step 9.5: Failure handling options
+### 9.2 Failure Handling and High Availability
+Configure health checks and fallback mechanisms within the upstream block:
 ```nginx
 upstream mygroup {
     server 10.10.10.210:8081 max_fails=3 fail_timeout=30s;
@@ -660,136 +365,82 @@ upstream mygroup {
     server 10.10.10.210:8083 backup;
 }
 ```
-
-| Option | Meaning |
-|---|---|
-| `max_fails=3` | After 3 failures, mark the server down |
-| `fail_timeout=30s` | Keep it out for 30 seconds, then retry |
-| `backup` | Spare, used only when the others are down |
-| `down` | Manually remove from rotation |
+| Parameter | Function |
+| :--- | :--- |
+| `max_fails=3` | Marks the node as unavailable after 3 consecutive failed health checks. |
+| `fail_timeout=30s` | Defines the window for `max_fails` and the duration the node remains quarantined. |
+| `backup` | Designates a standby node that only receives traffic when all primary nodes fail. |
+| `down` | Permanently removes a node from the rotation pool. |
 
 ---
 
-# 10. Forward Proxy
+## 10. Forward Proxy Implementation (Squid)
 
-**Nginx cannot do a proper forward proxy.** It does not support the `CONNECT` method needed for HTTPS tunnelling. The standard tool is **Squid**.
+Nginx lacks native support for the `CONNECT` method required for HTTPS tunneling. **Squid** is the enterprise standard for forward proxy deployments.
 
-```
- Client --> Squid :3128 --> Internet
-```
-
-## Step 10.1: Install and start Squid
+### 10.1 Installation and Service Control
 ```bash
 sudo dnf install squid -y
 sudo systemctl enable --now squid
 ```
 
-The default config already allows the server itself and private networks (`localhost`, `localnet`).
-
-## Step 10.2: Test from the server
-(`127.0.0.1` simply means "this same server", so we test from the server itself.)
-```bash
-curl -x http://127.0.0.1:3128 http://example.com
-curl -x http://127.0.0.1:3128 -I https://example.com
-sudo tail -n 5 /var/log/squid/access.log
-```
-
-## Step 10.3: Allow other machines (optional)
-```bash
-sudo vim /etc/squid/squid.conf
-```
-Key lines (use your own network):
-```
+### 10.2 Access Control Lists (ACLs)
+Edit `/etc/squid/squid.conf` to restrict proxy access to authorized internal subnets:
+```text
 acl mynet src 192.168.1.0/24
 http_access allow mynet
 http_access deny all
 http_port 3128
 ```
+*Security Warning: Never expose a forward proxy to the public internet without strict ACLs and authentication.*
+
+### 10.3 Firewall and Restart
 ```bash
 sudo firewall-cmd --permanent --add-port=3128/tcp
 sudo firewall-cmd --reload
 sudo systemctl restart squid
 ```
 
-> Never leave a forward proxy open to the whole internet. Restrict it to your own network.
-
-## Forward vs reverse in one picture
-```
- FORWARD:  curl -x http://PROXY:3128 http://example.com   (you know about the proxy)
- REVERSE:  curl -H "Host: proxy.local" http://localhost   (you know nothing)
-```
-
 ---
 
-# 11. Troubleshooting
+## 11. Troubleshooting and Diagnostics
 
-| Problem | Likely cause and fix |
-|---|---|
-| `nginx -t` shows an error | Typo; read the file name and line number |
-| **Connection refused** | Nothing is listening on that port. Check `ss -tlnp \| grep nginx` and the `listen` lines |
-| Browser cannot connect | Firewall closed, or nginx not running |
-| `403 Forbidden` | Permissions (`chmod -R 755 /var/www`) or SELinux label (`restorecon -Rv /var/www`) |
-| `404 Not Found` | Wrong `root` path or file missing |
-| **502 Bad Gateway** | Backend down, wrong port, or SELinux: `setsebool -P httpd_can_network_connect 1` |
-| **504 Gateway Timeout** | Backend too slow |
-| Cannot listen on 8081-8083 | SELinux port label: `semanage port -a -t http_port_t -p tcp 8081-8083` (or `-m`) |
-| Shows default page, not BACKEND | You forgot `-H "Host: proxy.local"` on `curl` |
-| Wrong site appears | `server_name` mismatch; check your hosts file |
-| `Address already in use` | Another program (or httpd) is on that port: `sudo ss -tlnp \| grep :80` |
-| Certbot fails | Domain not pointing at the server, or port 80 not reachable from the internet |
-| Config change has no effect | File does not end in `.conf`, or you forgot to reload |
+| Symptom | Root Cause & Resolution |
+| :--- | :--- |
+| **`nginx -t` fails** | Syntax error. Review the exact file path and line number provided in the output. |
+| **Connection Refused** | No process is bound to the target port. Verify `listen` directives and execute `ss -tlnp \| grep nginx`. |
+| **502 Bad Gateway** | Nginx cannot reach the backend. Verify backend service status, port numbers, and ensure `setsebool -P httpd_can_network_connect 1` is active. |
+| **403 Forbidden** | Filesystem permissions (`chmod 755`) or SELinux contexts (`restorecon -Rv`) are incorrectly applied to the document root. |
+| **Default OS Page Displayed** | The default `server` block in `nginx.conf` is intercepting the request. Comment it out or ensure the correct `Host` header is being passed. |
+| **Load Balancing Not Rotating in Browser** | Browser caching is serving the initial response. Use Incognito mode or verify via `curl`. |
+| **SELinux Port Denials** | Custom backend ports (e.g., 8081-8083) are blocked by SELinux. Register them using `semanage port -a -t http_port_t -p tcp <range>`. |
 
-**Remember:** "connection refused" means nothing is listening on that port. It is not a permission problem. In nginx, the `listen` lines inside your `server` blocks decide which ports are open. If every block drops port 80, nothing listens on 80.
-
-Where to look first:
+**Diagnostic Command Stack:**
 ```bash
 sudo nginx -t
 sudo systemctl status nginx
-sudo tail -n 30 /var/log/nginx/error.log
+sudo tail -n 50 /var/log/nginx/error.log
 sudo ss -tlnp | grep nginx
 getenforce
-sudo ausearch -m avc -ts recent
 ```
 
 ---
 
-# 12. Cheat Sheet
+## 12. Quick Reference
 
-```
- Install      dnf install nginx
- Start        systemctl enable --now nginx
- Web folder   /usr/share/nginx/html
- Config       /etc/nginx/nginx.conf + /etc/nginx/conf.d/*.conf
- Test         nginx -t           (ALWAYS before reload)
- Reload       systemctl reload nginx
- Logs         /var/log/nginx/error.log
-```
+### Core Directives
+| Directive | Context | Purpose |
+| :--- | :--- | :--- |
+| `server { }` | `http` | Defines a virtual host / server block. |
+| `listen 80;` | `server` | Binds the block to a specific port. |
+| `server_name` | `server` | Dictates the domain names the block responds to. |
+| `root` / `index` | `server`, `location` | Defines the filesystem path and default document. |
+| `proxy_pass` | `location` | Forwards requests to a backend URI or upstream group. |
+| `upstream { }` | `http` | Defines a pool of backend servers for load balancing. |
 
-| Directive | Purpose |
-|---|---|
-| `server { }` | One website |
-| `listen 80;` | Open a port |
-| `server_name` | Domain it answers to |
-| `root` / `index` | Files and default page |
-| `listen 443 ssl;` + cert lines | HTTPS |
-| `return 301 https://...` | Force HTTPS |
-| `proxy_pass` | Reverse proxy |
-| `upstream { }` | Group of backends |
-| `least_conn` / `ip_hash` / `weight=` | Balancing methods |
-| `max_fails` / `fail_timeout` / `backup` | Failure handling |
-
-```
- Workflow:
- 1. Edit /etc/nginx/conf.d/xxx.conf
- 2. sudo nginx -t
- 3. sudo systemctl reload nginx
- 4. Test with curl / browser
- 5. If broken: error.log -> SELinux -> firewall -> ss -tlnp
-```
-
-## Practice ideas
-1. Add a third virtual host with its own logs.
-2. Switch the load balancer to `ip_hash` and notice you always hit the same backend.
-3. Make backend 3 a `backup` and break backends 1 and 2.
-4. Add HTTPS to a virtual host with a self-signed certificate.
-5. Use `curl -I` to compare HTTP and HTTPS response headers.
+### Standard Operating Procedure
+1. Modify configuration in `/etc/nginx/conf.d/*.conf`.
+2. Validate syntax: `sudo nginx -t`.
+3. Apply changes: `sudo systemctl reload nginx`.
+4. Verify via `curl` and application logs.
+5. If errors occur, inspect `/var/log/nginx/error.log` and SELinux audit logs (`ausearch -m avc -ts recent`).
