@@ -82,12 +82,12 @@ Apache HTTP Server (httpd) is a production-grade web server capable of serving s
 ```
   Client (Browser)                       SERVER (httpd)
  +----------------+   HTTP Request     +------------------------+
- |  Chrome / curl | ----------------> |  httpd process         |
- |                |                   |    |                   |
- |                | <---------------- |    v                   |
- +----------------+   HTTP Response  |  /var/www/html/        |
-                                    |  index.html            |
-                                    +------------------------+
+ |  Chrome / curl | ---------------->  |  httpd process         |
+ |                |                    |    |                   |
+ |                | <----------------  |    v                   |
+ +----------------+   HTTP Response    |  /var/www/html/        |
+                                       |  index.html            |
+                                       +------------------------+
 ```
 
 ### 1.2 Core Terminology
