@@ -1,8 +1,8 @@
 # MariaDB Galera Cluster Implementation Guide
 
-A complete record of how the 3-node Galera cluster was built on AlmaLinux 10,
-including every command used, every deviation from the upstream guide, and
-every workaround applied. Written so the same result can be reproduced later.
+A complete record of how the 3 node Galera cluster was built on AlmaLinux 10,
+including every command used and every workaround applied. Written so the same
+result can be reproduced later.
 
 ## 0. Environment
 
@@ -14,41 +14,23 @@ every workaround applied. Written so the same result can be reproduced later.
 | Proxy (existing) | maxscale | 10.10.10.190 | Not part of Galera; see Section 8 |
 
 OS: AlmaLinux 10.2 (Lavender Lion), x86_64
-MariaDB: 10.11 series (from the MariaDB repository already configured for MaxScale)
+MariaDB: 10.11 series
 Galera provider: `galera` package from AlmaLinux AppStream
 SST method: `rsync`
 
-The three nodes previously formed a primary/replica setup (mariadb-1 primary,
-mariadb-2 and mariadb-3 replicas). That replication was removed before Galera
-was configured. Galera cannot coexist with standard replication settings.
+The three nodes previously formed a primary/replica setup. That replication was
+removed before Galera was configured. Galera cannot coexist with standard
+replication settings.
 
-## 1. Why the upstream document needed changes
+## 1. Prerequisites (run on all three nodes)
 
-The reference guide (`MariaDB Galera Cluster Guide`) is written for
-Debian/Ubuntu. Several commands and paths differ on AlmaLinux 10. Every
-deviation is listed here so nothing is a surprise later.
-
-| Upstream (Debian/Ubuntu) | AlmaLinux 10 (used here) | Reason |
-|---|---|---|
-| `apt install galera-4` | `dnf install galera mariadb-server-galera` | Different package names; the bootstrap script lives in a separate package on AlmaLinux |
-| `wsrep_provider=/usr/lib/galera/libgalera_smm.so` | `wsrep_provider=/usr/lib64/galera/libgalera_smm.so` | Different library path |
-| `/etc/mysql/conf.d/galera.cnf` | `/etc/my.cnf.d/galera.cnf` | Different config directory |
-| `ufw allow 4567/...` | `firewall-cmd --add-port=4567/...` | Different firewall tool |
-| Fresh install assumed | Old replication settings removed first | Nodes had prior primary/replica config |
-| `galera_new_cluster` works out of the box | Needs a systemd drop-in workaround | Bug in the AlmaLinux 10 `mariadb-server` package (Section 5) |
-
-The procedure is identical to the upstream guide. Only the OS specific
-syntax differs.
-
-## 2. Prerequisites (run on all three nodes)
-
-### 2.1 Install rsync (needed for SST)
+### 1.1 Install rsync (needed for SST)
 
 ```bash
 sudo dnf install rsync -y
 ```
 
-### 2.2 Install the Galera provider and the bootstrap script
+### 1.2 Install the Galera provider and the bootstrap script
 
 ```bash
 sudo dnf install galera mariadb-server-galera -y
@@ -63,10 +45,10 @@ systemd integration needed to bootstrap a cluster. Without it,
 `galera_new_cluster` does not exist and the bootstrap step fails with
 `command not found`.
 
-On AlmaLinux 10, the package is named `galera` (not `galera-4`). `dnf install
-galera-4` fails with `No match for argument: galera-4`.
+The package is named `galera` on AlmaLinux 10. `dnf install galera-4` fails
+with `No match for argument: galera-4`.
 
-### 2.3 Confirm the provider library path
+### 1.3 Confirm the provider library path
 
 ```bash
 find /usr -name 'libgalera_smm.so' 2>/dev/null
@@ -78,11 +60,9 @@ On AlmaLinux 10 the output is:
 /usr/lib64/galera/libgalera_smm.so
 ```
 
-This exact path must be used in `wsrep_provider=`. The upstream guide's
-`/usr/lib/galera/libgalera_smm.so` does not exist on AlmaLinux and causes
-MariaDB to fail at startup with a provider load error.
+This exact path must be used in `wsrep_provider=`.
 
-### 2.4 Stop and disable the old MariaDB service
+### 1.4 Stop and disable the old MariaDB service
 
 ```bash
 sudo systemctl stop mariadb
@@ -93,10 +73,10 @@ The nodes were primary/replicas. Starting MariaDB with the old replication
 config while Galera is also enabled causes conflicts. Stop it, configure
 Galera, then start via the Galera bootstrap path.
 
-### 2.5 Remove conflicting settings from `mariadb-server.cnf`
+### 1.5 Remove conflicting settings from `mariadb-server.cnf`
 
-Edit `/etc/my.cnf.d/mariadb-server.cnf` and comment out or remove any of
-these lines under `[mysqld]`, if present:
+Edit `/etc/my.cnf.d/mariadb-server.cnf` and comment out or remove any of these
+lines under `[mysqld]`, if present:
 
 ```ini
 #server_id         = ...
@@ -111,7 +91,7 @@ in place produces warnings or errors at startup and can prevent the node from
 syncing. `galera.cnf` (next section) sets `binlog_format=ROW` explicitly; the
 rest are managed by Galera. Leave `bind-address` and `datadir` as they are.
 
-### 2.6 Open the Galera ports
+### 1.6 Open the Galera ports
 
 ```bash
 sudo firewall-cmd --permanent --add-port=3306/tcp
@@ -133,10 +113,10 @@ Why each port:
 | 4444 | SST, a node receiving a full data copy on first join |
 
 Without 4567 the nodes cannot see each other. Without 4444 the joining nodes
-cannot receive the initial snapshot. Without 4568, restarted nodes fall back
-to a full SST instead of a fast IST.
+cannot receive the initial snapshot. Without 4568, restarted nodes fall back to
+a full SST instead of a fast IST.
 
-## 3. Create `galera.cnf` on all three nodes
+## 2. Create `galera.cnf` on all three nodes
 
 ```bash
 sudo vim /etc/my.cnf.d/galera.cnf
@@ -185,7 +165,7 @@ Why each setting exists:
 | `innodb_autoinc_lock_mode=2` | Required for multi primary writes; prevents auto increment conflicts |
 | `bind-address=0.0.0.0` | Listen on all interfaces so other nodes and MaxScale can reach it |
 | `wsrep_on=ON` | Enables the Galera replication plugin |
-| `wsrep_provider=` | Path to the Galera library. Must match the actual file from Section 2.3 |
+| `wsrep_provider=` | Path to the Galera library. Must match the actual file from Section 1.3 |
 | `wsrep_cluster_name` | Must be identical on every node. Nodes with a different name form separate clusters |
 | `wsrep_cluster_address` | Comma separated list of all node IPs, prefixed with `gcomm://`. Identical on every node |
 | `wsrep_node_name` | A label, unique per node. Not the OS hostname; just a unique string |
@@ -212,13 +192,13 @@ wsrep_sst_method=rsync
 
 node2 and node3 differ only in `wsrep_node_name` and `wsrep_node_address`.
 
-## 4. Fix the `galera_new_cluster` bug (node1 only)
+## 3. Fix the `galera_new_cluster` bug (node1 only)
 
 On AlmaLinux 10's `mariadb-server` package, the `galera_new_cluster` script
-creates a flag file (`/run/mariadb/wsrep-new-cluster`) that is supposed to
-tell MariaDB to bootstrap a new cluster. The systemd unit in this package
-does not read that file, so `galera_new_cluster` starts MariaDB as if it
-were a normal join attempt, and it fails because no cluster exists yet.
+creates a flag file (`/run/mariadb/wsrep-new-cluster`) that is supposed to tell
+MariaDB to bootstrap a new cluster. The systemd unit in this package does not
+read that file, so `galera_new_cluster` starts MariaDB as if it were a normal
+join attempt, and it fails because no cluster exists yet.
 
 Symptom: `galera_new_cluster` runs, but MariaDB does not come up as a new
 cluster. The log shows the node trying to connect to the `wsrep_cluster_address`
@@ -245,18 +225,17 @@ When `galera_new_cluster` runs, it creates that file containing
 flag to MariaDB, which then bootstraps the cluster as intended.
 On node2 and node3, the file never exists, so the drop in has no effect.
 
-This is a workaround for a packaging bug, not part of the upstream procedure.
-Apply it to node1 only. If a future AlmaLinux update fixes the package, this
-drop in can be removed.
+This is a workaround for a packaging bug. Apply it to node1 only. If a future
+AlmaLinux update fixes the package, this drop in can be removed.
 
-## 5. Bootstrap the cluster
+## 4. Bootstrap the cluster
 
 Bootstrapping means "start the very first node of a brand new cluster."
 It must be done on exactly one node, exactly once, on the initial start.
 
 If you bootstrap two nodes at the same time, each forms its own separate one
-node cluster. They never merge. This is called split brain, and the only fix
-is to wipe the data directories and start over.
+node cluster. They never merge. This is called split brain, and the only fix is
+to wipe the data directories and start over.
 
 On node1 (.201) only:
 
@@ -279,9 +258,8 @@ directory.
 
 Important: the SST from node1 overwrites the data directory on the joining
 nodes. If the previous primary/replica setup left different data on each node,
-the cluster will contain whatever node1 has. This is expected for a lab
-rebuild. For a production migration, take a dump first or plan which node's
-data is authoritative.
+the cluster will contain whatever node1 has. This is expected. For a production
+migration, take a dump first or plan which node's data is authoritative.
 
 If MariaDB fails to start:
 
@@ -293,14 +271,14 @@ Common causes and fixes:
 
 | Error | Cause | Fix |
 |---|---|---|
-| `WSREP: Failed to load provider` or `dlopen(): ... No such file` | `wsrep_provider` path wrong | Use the actual path from Section 2.3 |
+| `WSREP: Failed to load provider` or `dlopen(): ... No such file` | `wsrep_provider` path wrong | Use the actual path from Section 1.3 |
 | `It may not be safe to bootstrap the cluster from this node` | `safe_to_bootstrap: 0` in `/var/lib/mysql/grastate.dat` from an unclean previous shutdown | If this node has no unique data, `sudo sed -i 's/^safe_to_bootstrap: 0/safe_to_bootstrap: 1/' /var/lib/mysql/grastate.dat` and retry `galera_new_cluster` |
 | Node starts but `wsrep_cluster_size` stays 1 | Other nodes not started, or firewall blocking 4567/4444 | Check `firewall-cmd --list-ports` on all nodes, start node2/node3 |
-| `Access denied` or auth errors | Old replication users or config still active | Confirm Section 2.5 was applied |
+| `Access denied` or auth errors | Old replication users or config still active | Confirm Section 1.5 was applied |
 
-## 6. Verify the cluster
+## 5. Verify the cluster
 
-### 6.1 Cluster size
+### 5.1 Cluster size
 
 On any node:
 
@@ -314,7 +292,7 @@ Expected:
 | wsrep_cluster_size | 3 |
 ```
 
-### 6.2 Full health check
+### 5.2 Full health check
 
 On any node:
 
@@ -325,10 +303,10 @@ SHOW STATUS LIKE 'wsrep_connected';            -- ON
 SHOW STATUS LIKE 'wsrep_local_state_comment';  -- Synced
 ```
 
-All four must match the comments. If `wsrep_ready` is `OFF` or the state is
-not `Synced`, that node is still catching up. Wait a minute and re check.
+All four must match the comments. If `wsrep_ready` is `OFF` or the state is not
+`Synced`, that node is still catching up. Wait a minute and re check.
 
-### 6.3 Synchronous replication test
+### 5.3 Synchronous replication test
 
 On node1:
 
@@ -356,7 +334,7 @@ INSERT INTO galera_test.messages (text) VALUES ('written on node2');
 Check on node1. The row must be there. This proves multi primary synchronous
 replication works in both directions.
 
-### 6.4 Node view
+### 5.4 Node view
 
 From any node:
 
@@ -370,7 +348,7 @@ Should list all three node addresses:
 10.10.10.201:3306,10.10.10.202:3306,10.10.10.203:3306
 ```
 
-## 7. What the cluster now does
+## 6. What the cluster now does
 
 Multi primary: every node accepts reads and writes.
 Synchronous: a transaction commits only after it is certified across the
@@ -379,10 +357,10 @@ Automatic membership: if a node fails, the remaining two continue. When it
 returns, it rejoins (via IST if it was gone briefly, or SST if it fell too far
 behind).
 Quorum: with three nodes, the cluster tolerates one node being down. With two
-nodes up, there is still quorum. With one node up, the cluster loses quorum
-and stops accepting writes. This is by design and prevents split brain.
+nodes up, there is still quorum. With one node up, the cluster loses quorum and
+stops accepting writes. This is by design and prevents split brain.
 
-## 8. MaxScale is not compatible with this cluster as currently configured
+## 7. MaxScale is not compatible with this cluster as currently configured
 
 The existing `/etc/maxscale.cnf` uses:
 
@@ -403,13 +381,13 @@ To put MaxScale in front of Galera, the configuration must change:
 
 Monitor module: `mariadbmon` becomes `galeramon`
 Service router: `readwritesplit` becomes `readconnroute` with
-`router_options=master` (or `galeramon` aware routing)
+`router_options=master`
 
 This is a separate change and is not part of the Galera build documented here.
 Do not point the existing MaxScale config at the Galera cluster until that
 reconfiguration is done.
 
-## 9. Reproduction checklist
+## 8. Reproduction checklist
 
 Run in this order. Every step must succeed before moving on.
 
@@ -420,7 +398,7 @@ Run in this order. Every step must succeed before moving on.
 | 3 | `sudo systemctl stop mariadb && sudo systemctl disable mariadb` (all nodes) | Service stopped |
 | 4 | Remove `server_id`, `log_bin`, `log_slave_updates`, `read_only` from `mariadb-server.cnf` (all nodes) | File edited |
 | 5 | Open ports 3306, 4567/tcp+udp, 4568, 4444 (all nodes) | `firewall-cmd --list-ports` shows them |
-| 6 | Create `/etc/my.cnf.d/galera.cnf` with per node name/address (all nodes) | `grep wsrep_` matches Section 3 |
+| 6 | Create `/etc/my.cnf.d/galera.cnf` with per node name/address (all nodes) | `grep wsrep_` matches Section 2 |
 | 7 | Create systemd drop in `fix_galera_new_cluster.conf` (node1 only) | File exists, `daemon-reload` done |
 | 8 | `sudo galera_new_cluster` (node1 only) | MariaDB starts, log shows new cluster |
 | 9 | `sudo systemctl start mariadb` (node2, node3) | Both start and join |
@@ -429,7 +407,7 @@ Run in this order. Every step must succeed before moving on.
 | 12 | Write on node1, read on node2 | Row visible |
 | 13 | Write on node2, read on node1 | Row visible |
 
-## 10. Reference: all commands used, in order
+## 9. Reference: all commands used, in order
 
 On all three nodes:
 
@@ -456,7 +434,7 @@ sudo firewall-cmd --permanent --add-port=4568/tcp
 sudo firewall-cmd --permanent --add-port=4444/tcp
 sudo firewall-cmd --reload
 
-# 6. Create /etc/my.cnf.d/galera.cnf (Section 3)
+# 6. Create /etc/my.cnf.d/galera.cnf (Section 2)
 sudo vim /etc/my.cnf.d/galera.cnf
 
 # 7. Verify
@@ -494,34 +472,32 @@ sudo mariadb -u root -p -e "SHOW STATUS LIKE 'wsrep_ready';"
 sudo mariadb -u root -p -e "SHOW STATUS LIKE 'wsrep_local_state_comment';"
 ```
 
-## 11. Notes for the future
+## 10. Notes for the future
 
 Bootstrapping is a one time operation. After the cluster exists, start nodes
 with `sudo systemctl start mariadb`, not `galera_new_cluster`. Use
-`galera_new_cluster` only if you are intentionally rebuilding the whole
-cluster from scratch (for example after wiping all data directories).
+`galera_new_cluster` only if you are intentionally rebuilding the whole cluster
+from scratch (for example after wiping all data directories).
 Never bootstrap two nodes. That creates two separate clusters (split brain).
 The systemd drop in is a workaround. If a future AlmaLinux package update fixes
 the `mariadb-server-galera` integration, the drop in can be removed.
-SST overwrites data. When a new node joins, it receives node1's data
-directory. Confirm that is what you want before adding a node.
+SST overwrites data. When a new node joins, it receives node1's data directory.
+Confirm that is what you want before adding a node.
 MaxScale needs reconfiguration before it can sit in front of this cluster
-(Section 8). The existing `mariadbmon` + `readwritesplit` config is for
+(Section 7). The existing `mariadbmon` + `readwritesplit` config is for
 primary/replica, not multi primary.
 Quorum matters. Three nodes tolerate one failure. Two nodes up still have
 quorum. One node alone has no quorum and refuses writes. This is intended, to
 prevent split brain.
 
-## 12. Documentation references
+## 11. Documentation references
 
 This guide was written with the help of the following MariaDB documentation:
 
-- MariaDB Galera Cluster Guide (quickstart):
-  https://mariadb.com/docs/galera-cluster/galera-cluster-quickstart-guides/mariadb-galera-cluster-guide
-- Source of the same guide on GitHub:
-  https://github.com/mariadb-corporation/mariadb-docs/blob/main/galera-cluster/galera-cluster-quickstart-guides/mariadb-galera-cluster-guide.md
+https://mariadb.com/docs/galera-cluster/galera-cluster-quickstart-guides/mariadb-galera-cluster-guide
 
-The upstream guide describes the general procedure for a Debian/Ubuntu
-installation. This document adapts that procedure to AlmaLinux 10, records
-every OS specific change, and documents the `galera_new_cluster` packaging
-workaround that was required on this platform.
+https://github.com/mariadb-corporation/mariadb-docs/blob/main/galera-cluster/galera-cluster-quickstart-guides/mariadb-galera-cluster-guide.md
+
+```
+
+**File name:** `mariadb-galera-cluster-implementation.md`
