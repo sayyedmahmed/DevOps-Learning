@@ -1,12 +1,5 @@
 # MaxScale with a Galera Cluster
 
-**File name:** `20.0-mariadb-maxscale-galera.md`
-
-A complete guide for switching an existing MaxScale primary/replica configuration to a Galera cluster. References the primary/replica build in `19.0-mariadb-maxscale-singlenode.md` and explains exactly what changes, why, and what happens if you keep the old lines.
-
-```markdown
-# MaxScale with a Galera Cluster
-
 A complete record of how MaxScale was reconfigured to sit in front of a 3 node
 Galera cluster. This document builds on the primary/replica setup described in
 `19.0-mariadb-maxscale-singlenode.md` and focuses on what changes, why each line
