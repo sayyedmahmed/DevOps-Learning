@@ -1,0 +1,773 @@
+# Application Code (Apache + PHP CRUD Contacts App)
+
+**Companion file to `07-crud-app-maxscale-galera.md`**
+
+Save this as **`08-crud-app-application-code.md`**. It contains the complete, copy‑paste‑ready source for the Contacts CRUD app running on the app VM (`10.10.10.180`) in front of MaxScale (`10.10.10.190:4006`) and a 3‑node Galera cluster (`.201/.202/.203`).
+
+> **What differs from the original tutorial:** only **one line**: `config.php` uses `'db_port' => 4006` (the MaxScale listener) instead of `3306`. **`index.php` is byte‑for‑byte identical to the original guide.** PDO speaks the `MariaDBClient` protocol, so the app code does not know or care that a proxy is in front of the database.
+
+---
+
+## 1. File layout on the App VM
+
+```
+/var/www/crudapp/
+  ├── config.php                 ← DB settings (OUTSIDE web root, never downloadable)
+  └── public/
+        └── index.php            ← the whole app (Apache serves this folder)
+
+/etc/httpd/conf.d/
+  └── crudapp.conf               ← Apache vhost (Section 4)
+
+(on a Galera node, e.g. 10.10.10.201)
+  /root/schema.sql               ← database + table + app user (Section 5)
+```
+
+---
+
+## 2. `config.php`
+
+**Path:** `/var/www/crudapp/config.php`
+**Permissions:** `640 root:apache`
+
+```php
+<?php
+// Database settings. This file lives OUTSIDE the web folder, so browsers can never download it.
+//
+// IMPORTANT (MaxScale architecture):
+//   The app does NOT talk to MariaDB directly. It talks to MaxScale on port 4006.
+//   MaxScale then forwards to the Galera cluster (.201/.202/.203) on port 3306.
+//   So db_host = MaxScale's address, db_port = MaxScale's listener port.
+return [
+    'db_host' => '10.10.10.190',      // MaxScale host (NOT a MariaDB server)
+    'db_port' => 4006,                // MaxScale listener port (NOT 3306)
+    'db_name' => 'app_data',
+    'db_user' => 'appuser',           // created as 'appuser'@'10.10.10.%' on a Galera node
+    'db_pass' => '123',               // must match the Galera user (weak: lab only)
+];
+```
+
+Why `4006` and not `3306`:
+- `3306` is the Galera node port; the app VM must never connect to the nodes directly.
+- `4006` is what `[Read-Write-Listener]` in `/etc/maxscale.cnf` listens on.
+- If you change the listener port in `maxscale.cnf`, change `db_port` here to match.
+
+---
+
+## 3. `public/index.php`
+
+**Path:** `/var/www/crudapp/public/index.php`
+**Permissions:** `640 root:apache`
+
+> **Pasting tip (vim):** type `:set paste`, press `Enter`, then `i`, then paste. This stops vim from re‑indenting the code.
+
+```php
+<?php
+declare(strict_types=1);
+session_start();
+
+/* =====================================================================
+   Contacts CRUD app: one file, PHP + PDO + MariaDB (via MaxScale)
+   ===================================================================== */
+
+$config = require __DIR__ . '/../config.php';
+
+/* ---------- Helpers ---------- */
+
+// Escape text before printing it in HTML (protects against XSS)
+function e(?string $value): string
+{
+    return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+}
+
+// One shared database connection (created the first time it is needed)
+function db(): PDO
+{
+    static $pdo = null;
+    global $config;
+
+    if ($pdo === null) {
+        $dsn = sprintf(
+            'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+            $config['db_host'],
+            $config['db_port'],
+            $config['db_name']
+        );
+        $pdo = new PDO($dsn, $config['db_user'], $config['db_pass'], [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+            PDO::ATTR_TIMEOUT            => 5,
+        ]);
+    }
+    return $pdo;
+}
+
+// A one-time message shown after redirecting ("Contact added", etc.)
+function flash(string $type, string $message): void
+{
+    $_SESSION['flash'] = ['type' => $type, 'message' => $message];
+}
+
+function redirect(string $url): void
+{
+    header('Location: ' . $url);
+    exit;
+}
+
+// CSRF protection: every form carries a secret token
+if (empty($_SESSION['csrf'])) {
+    $_SESSION['csrf'] = bin2hex(random_bytes(32));
+}
+
+function csrf_field(): string
+{
+    return '<input type="hidden" name="csrf" value="' . e($_SESSION['csrf']) . '">';
+}
+
+function csrf_ok(): bool
+{
+    return isset($_POST['csrf']) && hash_equals($_SESSION['csrf'], (string) $_POST['csrf']);
+}
+
+// Check and clean the form input. Returns [cleaned data, list of errors]
+function validate(array $input): array
+{
+    $data = [
+        'name'  => trim((string) ($input['name'] ?? '')),
+        'email' => trim((string) ($input['email'] ?? '')),
+        'phone' => trim((string) ($input['phone'] ?? '')),
+        'city'  => trim((string) ($input['city'] ?? '')),
+    ];
+    $errors = [];
+
+    if ($data['name'] === '') {
+        $errors['name'] = 'Name is required.';
+    } elseif (mb_strlen($data['name']) > 100) {
+        $errors['name'] = 'Name must be 100 characters or fewer.';
+    }
+
+    if ($data['email'] === '') {
+        $errors['email'] = 'Email is required.';
+    } elseif (!filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
+        $errors['email'] = 'Please enter a valid email address.';
+    } elseif (mb_strlen($data['email']) > 150) {
+        $errors['email'] = 'Email must be 150 characters or fewer.';
+    }
+
+    if ($data['phone'] !== '' && !preg_match('/^[0-9+\-\s()]{5,20}$/', $data['phone'])) {
+        $errors['phone'] = 'Phone may contain digits, spaces, + - ( ) and be 5 to 20 characters.';
+    }
+
+    if (mb_strlen($data['city']) > 80) {
+        $errors['city'] = 'City must be 80 characters or fewer.';
+    }
+
+    return [$data, $errors];
+}
+
+// If anything unexpected goes wrong, log the details and show a friendly page
+set_exception_handler(function (Throwable $ex): void {
+    error_log('Contacts app error: ' . $ex->getMessage());
+    http_response_code(500);
+    echo '<!doctype html><meta charset="utf-8"><title>Error</title>'
+       . '<body style="font-family:sans-serif;max-width:560px;margin:80px auto;padding:0 20px">'
+       . '<h1>Something went wrong</h1>'
+       . '<p>The application could not complete your request. '
+       . 'Please check that the database server is reachable, then try again.</p>'
+       . '<p><a href="index.php">Back to the contact list</a></p></body>';
+});
+
+/* ---------- Page state ---------- */
+
+$action = $_GET['action'] ?? 'list';        // list | create | edit
+$errors = [];
+$form   = ['name' => '', 'email' => '', 'phone' => '', 'city' => ''];
+$editId = 0;
+
+/* ---------- Handle form submissions (Create, Update, Delete) ---------- */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!csrf_ok()) {
+        http_response_code(400);
+        exit('Invalid or expired form. Please go back and try again.');
+    }
+
+    $do = (string) ($_POST['do'] ?? '');
+
+    if ($do === 'create' || $do === 'update') {
+        [$form, $errors] = validate($_POST);
+        $editId = (int) ($_POST['id'] ?? 0);
+
+        if (!$errors) {
+            $params = [
+                ':name'  => $form['name'],
+                ':email' => $form['email'],
+                ':phone' => $form['phone'] === '' ? null : $form['phone'],
+                ':city'  => $form['city'] === '' ? null : $form['city'],
+            ];
+
+            try {
+                if ($do === 'create') {
+                    // CREATE
+                    $stmt = db()->prepare(
+                        'INSERT INTO contacts (name, email, phone, city)
+                         VALUES (:name, :email, :phone, :city)'
+                    );
+                    $stmt->execute($params);
+                    flash('success', 'Contact added successfully.');
+                } else {
+                    // UPDATE
+                    $params[':id'] = $editId;
+                    $stmt = db()->prepare(
+                        'UPDATE contacts
+                            SET name = :name, email = :email, phone = :phone, city = :city
+                          WHERE id = :id'
+                    );
+                    $stmt->execute($params);
+                    flash('success', 'Contact updated successfully.');
+                }
+                redirect('index.php');
+            } catch (PDOException $ex) {
+                // 23000 = duplicate value in a UNIQUE column (our email)
+                if ($ex->getCode() === '23000') {
+                    $errors['email'] = 'This email is already used by another contact.';
+                } else {
+                    throw $ex;
+                }
+            }
+        }
+        // There were errors: show the form again with the messages
+        $action = ($do === 'create') ? 'create' : 'edit';
+    } elseif ($do === 'delete') {
+        // DELETE
+        $stmt = db()->prepare('DELETE FROM contacts WHERE id = :id');
+        $stmt->execute([':id' => (int) ($_POST['id'] ?? 0)]);
+        flash('success', 'Contact deleted.');
+        redirect('index.php');
+    }
+}
+
+/* ---------- Load data for the page we are showing (Read) ---------- */
+
+// Edit page opened with a normal link: load the contact into the form
+if ($action === 'edit' && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    $editId = (int) ($_GET['id'] ?? 0);
+    $stmt = db()->prepare('SELECT name, email, phone, city FROM contacts WHERE id = :id');
+    $stmt->execute([':id' => $editId]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        flash('error', 'That contact was not found.');
+        redirect('index.php');
+    }
+    $form = array_map(fn($value) => (string) $value, $row);
+}
+
+// List page: read all contacts (with optional search)
+$contacts = [];
+$q = trim((string) ($_GET['q'] ?? ''));
+if ($action === 'list') {
+    if ($q !== '') {
+        $like = '%' . $q . '%';
+        $stmt = db()->prepare(
+            'SELECT id, name, email, phone, city, created_at
+               FROM contacts
+              WHERE name LIKE :q1 OR email LIKE :q2 OR city LIKE :q3
+              ORDER BY id DESC'
+        );
+        $stmt->execute([':q1' => $like, ':q2' => $like, ':q3' => $like]);
+    } else {
+        $stmt = db()->query(
+            'SELECT id, name, email, phone, city, created_at FROM contacts ORDER BY id DESC'
+        );
+    }
+    $contacts = $stmt->fetchAll();
+}
+
+$total = (int) db()->query('SELECT COUNT(*) FROM contacts')->fetchColumn();
+$info  = db()->query('SELECT @@hostname AS host, VERSION() AS version')->fetch();
+
+// One-time message from the previous request
+$flash = $_SESSION['flash'] ?? null;
+unset($_SESSION['flash']);
+?>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Contacts | CRUD App</title>
+    <style>
+        :root {
+            --bg: #f4f6fb;
+            --card: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --primary: #4f46e5;
+            --primary-dark: #4338ca;
+            --danger: #dc2626;
+            --border: #e5e7eb;
+            --ok-bg: #dcfce7;  --ok-text: #166534;
+            --err-bg: #fee2e2; --err-text: #991b1b;
+            --shadow: 0 4px 18px rgba(17, 24, 39, .08);
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0f172a;
+                --card: #1e293b;
+                --text: #e5e7eb;
+                --muted: #94a3b8;
+                --primary: #6366f1;
+                --primary-dark: #4f46e5;
+                --border: #334155;
+                --ok-bg: #14532d;  --ok-text: #bbf7d0;
+                --err-bg: #7f1d1d; --err-text: #fecaca;
+                --shadow: 0 4px 18px rgba(0, 0, 0, .4);
+            }
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+        }
+        .wrap { max-width: 1000px; margin: 0 auto; padding: 0 20px; }
+
+        /* Header */
+        .hero {
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            color: #fff;
+            padding: 34px 0 70px;
+        }
+        .hero h1 { margin: 0; font-size: 1.8rem; }
+        .hero p  { margin: 4px 0 0; opacity: .85; }
+        .main { margin-top: -44px; padding-bottom: 40px; }
+
+        /* Cards */
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            box-shadow: var(--shadow);
+            padding: 22px;
+        }
+        .toolbar {
+            display: flex; flex-wrap: wrap; gap: 12px;
+            align-items: center; justify-content: space-between;
+            margin-bottom: 18px;
+        }
+        .search { display: flex; gap: 8px; flex: 1 1 260px; max-width: 420px; }
+
+        /* Form controls */
+        input[type=text], input[type=email], input[type=search] {
+            width: 100%; padding: 10px 12px;
+            border: 1px solid var(--border); border-radius: 10px;
+            background: var(--card); color: var(--text); font-size: 1rem;
+        }
+        input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+        label { display: block; font-weight: 600; margin-bottom: 6px; }
+        .field { margin-bottom: 16px; }
+        .field .error { color: var(--err-text); font-size: .9rem; margin-top: 4px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
+        @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+
+        /* Buttons */
+        .btn {
+            display: inline-block; border: 0; cursor: pointer;
+            padding: 10px 16px; border-radius: 10px;
+            font-size: .95rem; font-weight: 600; text-decoration: none;
+            background: var(--primary); color: #fff;
+        }
+        .btn:hover { background: var(--primary-dark); }
+        .btn.ghost  { background: transparent; color: var(--text); border: 1px solid var(--border); }
+        .btn.ghost:hover { background: var(--bg); }
+        .btn.danger { background: var(--danger); }
+        .btn.small  { padding: 6px 12px; font-size: .85rem; }
+
+        /* Messages */
+        .alert { padding: 12px 16px; border-radius: 10px; margin-bottom: 18px; font-weight: 500; }
+        .alert.success { background: var(--ok-bg);  color: var(--ok-text); }
+        .alert.error   { background: var(--err-bg); color: var(--err-text); }
+
+        /* Table */
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        th { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+        tr:last-child td { border-bottom: 0; }
+        .person { display: flex; align-items: center; gap: 12px; }
+        .avatar {
+            width: 38px; height: 38px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            background: var(--primary); color: #fff; font-weight: 700;
+        }
+        .badge { background: var(--bg); border: 1px solid var(--border); padding: 2px 10px; border-radius: 99px; font-size: .85rem; }
+        .muted { color: var(--muted); }
+        .actions { display: flex; gap: 8px; }
+        .actions form { margin: 0; }
+        .empty { text-align: center; padding: 40px 10px; color: var(--muted); }
+        .footer { text-align: center; color: var(--muted); font-size: .85rem; padding: 10px 0 30px; }
+    </style>
+</head>
+<body>
+
+<header class="hero">
+    <div class="wrap">
+        <h1>Contacts</h1>
+        <p><?= $total ?> contact<?= $total === 1 ? '' : 's' ?> stored in MariaDB</p>
+    </div>
+</header>
+
+<main class="wrap main">
+
+    <?php if ($flash): ?>
+        <div class="alert <?= e($flash['type']) ?>"><?= e($flash['message']) ?></div>
+    <?php endif; ?>
+
+    <?php if ($action === 'list'): ?>
+        <!-- ================= LIST (Read) ================= -->
+        <div class="card">
+            <div class="toolbar">
+                <form class="search" method="get" action="index.php">
+                    <input type="search" name="q" value="<?= e($q) ?>" placeholder="Search name, email or city...">
+                    <button class="btn" type="submit">Search</button>
+                    <?php if ($q !== ''): ?>
+                        <a class="btn ghost" href="index.php">Clear</a>
+                    <?php endif; ?>
+                </form>
+                <a class="btn" href="?action=create">+ Add contact</a>
+            </div>
+
+            <?php if (!$contacts): ?>
+                <div class="empty">
+                    <?= $q !== '' ? 'No contacts match your search.' : 'No contacts yet. Click "Add contact" to create the first one.' ?>
+                </div>
+            <?php else: ?>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Name</th><th>Phone</th><th>City</th><th>Added</th><th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($contacts as $c): ?>
+                            <tr>
+                                <td>
+                                    <div class="person">
+                                        <div class="avatar"><?= e(mb_strtoupper(mb_substr($c['name'], 0, 1))) ?></div>
+                                        <div>
+                                            <strong><?= e($c['name']) ?></strong><br>
+                                            <span class="muted"><?= e($c['email']) ?></span>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td><?= e($c['phone']) ?: '<span class="muted">-</span>' ?></td>
+                                <td><?= $c['city'] !== null && $c['city'] !== ''
+                                        ? '<span class="badge">' . e($c['city']) . '</span>'
+                                        : '<span class="muted">-</span>' ?></td>
+                                <td class="muted"><?= e(substr((string) $c['created_at'], 0, 10)) ?></td>
+                                <td>
+                                    <div class="actions">
+                                        <a class="btn ghost small" href="?action=edit&id=<?= (int) $c['id'] ?>">Edit</a>
+                                        <form method="post" action="index.php"
+                                              onsubmit="return confirm('Delete this contact?');">
+                                            <?= csrf_field() ?>
+                                            <input type="hidden" name="do" value="delete">
+                                            <input type="hidden" name="id" value="<?= (int) $c['id'] ?>">
+                                            <button class="btn danger small" type="submit">Delete</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php endif; ?>
+        </div>
+
+    <?php else: ?>
+        <!-- ================= FORM (Create / Update) ================= -->
+        <?php $isEdit = ($action === 'edit'); ?>
+        <div class="card">
+            <h2 style="margin-top:0"><?= $isEdit ? 'Edit contact' : 'Add a new contact' ?></h2>
+
+            <form method="post" action="index.php" novalidate>
+                <?= csrf_field() ?>
+                <input type="hidden" name="do" value="<?= $isEdit ? 'update' : 'create' ?>">
+                <?php if ($isEdit): ?>
+                    <input type="hidden" name="id" value="<?= (int) $editId ?>">
+                <?php endif; ?>
+
+                <div class="grid">
+                    <div class="field">
+                        <label for="name">Name *</label>
+                        <input type="text" id="name" name="name" value="<?= e($form['name']) ?>" maxlength="100" required>
+                        <?php if (isset($errors['name'])): ?><div class="error"><?= e($errors['name']) ?></div><?php endif; ?>
+                    </div>
+                    <div class="field">
+                        <label for="email">Email *</label>
+                        <input type="email" id="email" name="email" value="<?= e($form['email']) ?>" maxlength="150" required>
+                        <?php if (isset($errors['email'])): ?><div class="error"><?= e($errors['email']) ?></div><?php endif; ?>
+                    </div>
+                    <div class="field">
+                        <label for="phone">Phone</label>
+                        <input type="text" id="phone" name="phone" value="<?= e($form['phone']) ?>" maxlength="20">
+                        <?php if (isset($errors['phone'])): ?><div class="error"><?= e($errors['phone']) ?></div><?php endif; ?>
+                    </div>
+                    <div class="field">
+                        <label for="city">City</label>
+                        <input type="text" id="city" name="city" value="<?= e($form['city']) ?>" maxlength="80">
+                        <?php if (isset($errors['city'])): ?><div class="error"><?= e($errors['city']) ?></div><?php endif; ?>
+                    </div>
+                </div>
+
+                <button class="btn" type="submit"><?= $isEdit ? 'Save changes' : 'Add contact' ?></button>
+                <a class="btn ghost" href="index.php">Cancel</a>
+            </form>
+        </div>
+    <?php endif; ?>
+
+</main>
+
+<div class="footer">
+    App server: <?= e((string) gethostname()) ?>
+    &nbsp;|&nbsp; Database server: <?= e($info['host']) ?> (MariaDB <?= e($info['version']) ?>)
+</div>
+
+</body>
+</html>
+```
+
+> Note: through MaxScale, `SELECT @@hostname` returns whichever Galera node served the read, so the footer showing `mariadb-1` / `mariadb-2` / `mariadb-3` is proof the proxy is in the path.
+
+---
+
+## 4. Apache Virtual Host
+
+**Path:** `/etc/httpd/conf.d/crudapp.conf`
+
+```apache
+<VirtualHost *:80>
+    ServerName 10.10.10.180
+    DocumentRoot /var/www/crudapp/public
+    DirectoryIndex index.php
+
+    <Directory /var/www/crudapp/public>
+        Options -Indexes
+        AllowOverride None
+        Require all granted
+    </Directory>
+
+    ErrorLog  /var/log/httpd/crudapp.error.log
+    CustomLog /var/log/httpd/crudapp.access.log combined
+</VirtualHost>
+```
+
+> If your VM already runs **nginx** on `:80`, do not install `httpd`, replace this file with an nginx server block that proxies PHP to `php-fpm` (see §12 of `07-crud-app-maxscale-galera.md`).
+
+---
+
+## 5. `schema.sql`, run on **one Galera node** (e.g. `10.10.10.201`)
+
+MaxScale cannot execute SQL. Run this on `.201` as root (`mariadb -u root -p`); Galera replicates it to `.202` and `.203` synchronously.
+
+```sql
+-- Run on ONE Galera node (e.g. 10.10.10.201), as root.
+-- Do NOT run this on the MaxScale host (10.10.10.190), it has no SQL engine.
+-- Do NOT run it through MaxScale (port 4006): DDL needs a real server.
+
+CREATE DATABASE IF NOT EXISTS app_data
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+USE app_data;
+
+CREATE TABLE IF NOT EXISTS contacts (
+    id         INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    name       VARCHAR(100) NOT NULL,
+    email      VARCHAR(150) NOT NULL,
+    phone      VARCHAR(20)  NULL,
+    city       VARCHAR(80)  NULL,
+    created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_contacts_email (email)
+) ENGINE=InnoDB;
+
+INSERT IGNORE INTO contacts (name, email, phone, city) VALUES
+  ('Ayesha Khan', 'ayesha@example.com', '+92 300 1234567', 'Islamabad'),
+  ('Bilal Ahmed', 'bilal@example.com',  '+92 321 7654321', 'Lahore'),
+  ('Sara Malik',  'sara@example.com',   '+92 333 1112223', 'Karachi');
+
+-- The DB sees MaxScale's address (10.10.10.190), NOT the app's (10.10.10.180).
+-- Hence the host pattern 10.10.10.% (covers MaxScale, stricter than '%').
+CREATE USER IF NOT EXISTS 'appuser'@'10.10.10.%' IDENTIFIED BY '123';
+
+-- Least privilege for this CRUD app (no CREATE/DROP, the app never changes schema)
+GRANT SELECT, INSERT, UPDATE, DELETE ON app_data.* TO 'appuser'@'10.10.10.%';
+
+FLUSH PRIVILEGES;
+```
+
+Then on the **MaxScale host** (`10.10.10.190`):
+
+```bash
+maxctrl reload service Read-Write-Service
+```
+
+---
+
+## 6. Deployment, copy‑paste sequence (App VM `10.10.10.180`)
+
+```bash
+# 1. Folders
+sudo mkdir -p /var/www/crudapp/public
+
+# 2. config.php  (paste Section 2)
+sudo vim /var/www/crudapp/config.php
+#    :set paste  →  Enter  →  i  →  paste  →  Esc  →  :wq  →  Enter
+
+# 3. index.php   (paste Section 3)
+sudo vim /var/www/crudapp/public/index.php
+
+# 4. Lock down config.php
+sudo chown root:apache /var/www/crudapp/config.php
+sudo chmod 640 /var/www/crudapp/config.php
+
+# 5. Permissions + SELinux labels for the whole tree
+sudo chown -R root:apache /var/www/crudapp
+sudo find /var/www/crudapp -type d -exec chmod 750 {} \;
+sudo find /var/www/crudapp -type f -exec chmod 640 {} \;
+sudo restorecon -Rv /var/www/crudapp
+
+# 6. Apache vhost (paste Section 4)
+sudo vim /etc/httpd/conf.d/crudapp.conf
+
+# 7. Syntax checks
+php -l /var/www/crudapp/config.php
+php -l /var/www/crudapp/public/index.php
+sudo httpd -t
+
+# 8. Restart / reload
+sudo systemctl restart php-fpm
+sudo systemctl reload httpd
+sudo systemctl status httpd php-fpm --no-pager
+
+# 9. SELinux must allow outbound DB connections
+getsebool httpd_can_network_connect_db          # must be "on"
+sudo setsebool -P httpd_can_network_connect_db 1
+
+# 10. Firewall
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --reload
+```
+
+---
+
+## 7. Verification
+
+### 7.1 Syntax and services
+
+```bash
+php -l /var/www/crudapp/config.php
+php -l /var/www/crudapp/public/index.php
+sudo httpd -t
+sudo systemctl status httpd php-fpm --no-pager
+```
+
+### 7.2 Path: App VM → MaxScale → Galera
+
+```bash
+mariadb -h 10.10.10.190 -P 4006 -u appuser -p123 app_data \
+        -e "SELECT COUNT(*) FROM contacts;"
+# → 3
+```
+
+- `Connection refused` → MaxScale not listening on 4006, or firewall on `.190` blocks 4006.
+- `Access denied` → host pattern is wrong on the Galera node, or MaxScale cache is stale (`maxctrl reload service Read-Write-Service`).
+
+### 7.3 HTTP
+
+```bash
+curl -sI http://10.10.10.180 | head -n 1
+# HTTP/1.1 200 OK
+
+curl -sI http://10.10.10.180 | grep -Ei 'server|x-powered-by'
+# Server: Apache/2.4.x (AlmaLinux)
+# X-Powered-By: PHP/8.3.x
+```
+
+If you see `Server: nginx/...` and `502 Bad Gateway`, nginx owns port 80, see §12 of `07-crud-app-maxscale-galera.md`.
+
+### 7.4 Browser
+
+Open `http://10.10.10.180` and exercise:
+
+| Action | Expected |
+|---|---|
+| Page loads | 3 seeded contacts, footer shows a Galera node hostname |
+| **+ Add contact** → submit | Green "Contact added successfully." |
+| Search `lahore` | Only Bilal |
+| **Edit** → change city → Save | Green "Contact updated successfully." |
+| **Delete** → confirm | Green "Contact deleted." |
+| Add duplicate email | Red "This email is already used by another contact." |
+| Empty Name | Red "Name is required." (nothing saved) |
+
+### 7.5 Prove data lives on the cluster
+
+On a **different** Galera node (e.g. `10.10.10.202`):
+
+```bash
+mariadb -u root -p -e "SELECT id, name, email, city FROM app_data.contacts ORDER BY id DESC;"
+```
+
+The row you just added in the browser must be present: Galera replication + MaxScale routing both verified.
+
+---
+
+## 8. What to change vs. the original single‑VM document
+
+| File | Original guide | This build | Why |
+|---|---|---|---|
+| `config.php` | `'db_port' => 3306` | `'db_port' => 4006` | App connects to MaxScale, not MariaDB |
+| `config.php` | `'db_user' => 'appuser'` | same | - |
+| `index.php` | - | **unchanged** | PDO + `MariaDBClient` protocol are transparent |
+| `crudapp.conf` | - | **unchanged** | - |
+| `schema.sql` | `'appuser'@'10.10.10.180'` | `'appuser'@'10.10.10.%'` | DB sees MaxScale's `.190`, not the app's `.180` |
+| `schema.sql` | run on `10.10.10.190` | run on a **Galera node** (`.201`) | MaxScale has no SQL engine |
+| Firewall on `.190` | port `3306` | port **`4006`** | MaxScale listener |
+| After user creation | - | `maxctrl reload service Read-Write-Service` | MaxScale caches the user list |
+
+---
+
+## 9. Quick troubleshooting pointers
+
+| Symptom | Where to look |
+|---|---|
+| `SQLSTATE[HY000] [2002] Connection refused` | `db_port` not `4006`, or MaxScale down, or firewall on `.190` for `4006`, or SELinux boolean off |
+| `SQLSTATE[HY000] [1045] Access denied for user 'appuser'@'10.10.10.190'` | Host pattern is `10.10.10.180` instead of `10.10.10.%`; fix on a Galera node, then `maxctrl reload service Read-Write-Service` |
+| `Access denied` then works on retry | MaxScale user cache stale → `maxctrl reload service Read-Write-Service` |
+| `could not find driver` | `sudo dnf install php-mysqlnd -y && sudo systemctl restart php-fpm` |
+| `Call to undefined function mb_strlen()` | `sudo dnf install php-mbstring -y && sudo systemctl restart php-fpm` |
+| Browser downloads the file / shows PHP source | PHP‑FPM not running or Apache not wired to it |
+| `403 Forbidden` | `restorecon -Rv /var/www/crudapp` + check `Require all granted` |
+| `404 Not Found` | `DocumentRoot` not `/var/www/crudapp/public` |
+| Apache default test page | vhost file not loaded → `sudo httpd -S` |
+
+Real errors are always in:
+
+```bash
+sudo tail -n 30 /var/log/php-fpm/www-error.log     # app logs "Contacts app error: ..." here
+sudo tail -n 30 /var/log/httpd/crudapp.error.log
+```
+
+---
+
+## 10. Related documents
+
+| File | Contents |
+|---|---|
+| `07-crud-app-maxscale-galera.md` | Architecture, build steps, deviations, troubleshooting, security, reproduction checklist |
+| **`08-crud-app-application-code.md`** (this file) | `config.php`, `index.php`, Apache vhost, `schema.sql`, deployment & verification commands |

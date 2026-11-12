@@ -1,0 +1,772 @@
+# MySQL Administration Notes
+
+These notes summarize the MySQL and Linux commands and concepts we explored in the lab. They are designed to be practical and to explain not just *what* to run, but *why* it works.
+
+**Observed MySQL data directory:** `/var/lib/mysql_data`
+**MySQL family/version:** MySQL 8.0 (confirm exact version with `SELECT VERSION();`)
+
+> Paths vary between installations. Always check the configured `datadir` instead of assuming it is the same on every server.
+
+---
+
+## 1. Core Concepts
+
+- **MySQL Server (`mysqld`)**: The background daemon that manages databases, handles connections, enforces permissions, and stores data on disk.
+- **MySQL Client (`mysql`)**: The command-line program we use to connect to the server and send SQL statements. It does not store data itself.
+- **SQL**: The language used to create, read, update, and delete database objects and data.
+- **Database**: A container for tables and other objects. In MySQL, a database is essentially a namespace and a directory on disk.
+- **Table**: Data organized in rows and columns. Each table maps to a storage engine (usually InnoDB) that decides how data is written to disk.
+- **Row**: One record in a table.
+- **Column**: One field in a record, with a defined data type.
+
+Example from our lab:
+
+- Database: `testdb`
+- Table: `employees`
+- Columns: `id`, `name`, `department`
+- Example row: `1, Ahmed, DevOps`
+
+**Linux root and MySQL root are different accounts.** Logging in as Linux `root` does not automatically mean we are logged in as MySQL `root`. They are separate authentication systems.
+
+---
+
+## 2. Connecting to MySQL
+
+Run this in the Linux terminal:
+
+```bash
+mysql -u root -p
+```
+
+- `mysql`: starts the MySQL client.
+- `-u root`: uses the MySQL account named `root`.
+- `-p`: prompts for its password (avoids putting the password in shell history).
+
+Inside MySQL, the prompt looks like `mysql>`.
+
+Useful commands:
+
+```sql
+SELECT VERSION();
+SELECT USER(), CURRENT_USER();
+EXIT;
+```
+
+- `VERSION()` shows the server version, useful for confirming which features are available.
+- `USER()` shows the identity we supplied at login.
+- `CURRENT_USER()` shows the MySQL account the server actually matched, this can differ from `USER()` when wildcard hosts or anonymous accounts are involved.
+
+---
+
+## 3. Essential SQL Commands
+
+Run these inside the MySQL client.
+
+### Databases
+
+```sql
+SHOW DATABASES;
+CREATE DATABASE testdb;
+USE testdb;
+```
+
+- `SHOW DATABASES` lists databases visible to our account (permission-filtered).
+- `CREATE DATABASE` creates a database directory under `datadir`.
+- `USE` selects the database for the current session only; it does not persist across reconnects.
+
+### Tables
+
+```sql
+SHOW TABLES;
+```
+
+Create a table:
+
+```sql
+CREATE TABLE employees (
+    id INT PRIMARY KEY,
+    name VARCHAR(100),
+    department VARCHAR(100)
+);
+```
+
+- `INT`: integer number.
+- `VARCHAR(100)`: variable-length text up to 100 characters.
+- `PRIMARY KEY`: uniquely identifies each row and implicitly creates an index, which speeds up lookups and enforces uniqueness.
+
+Insert a row:
+
+```sql
+INSERT INTO employees (id, name, department)
+VALUES (1, 'Ahmed', 'DevOps');
+```
+
+Read rows:
+
+```sql
+SELECT * FROM employees;
+SELECT name, department FROM employees;
+```
+
+Filter rows:
+
+```sql
+SELECT * FROM employees WHERE department = 'DevOps';
+```
+
+Update a row:
+
+```sql
+UPDATE employees
+SET department = 'Cloud'
+WHERE id = 1;
+```
+
+Delete a row:
+
+```sql
+DELETE FROM employees WHERE id = 1;
+```
+
+**Caution:** An `UPDATE` or `DELETE` without `WHERE` affects every row in the table. Always verify the `WHERE` clause before executing.
+
+Inspect table structure:
+
+```sql
+DESCRIBE employees;
+SHOW CREATE TABLE employees;
+```
+
+- `DESCRIBE` gives a quick column summary.
+- `SHOW CREATE TABLE` gives the exact DDL, including the storage engine and indexes, more useful for troubleshooting.
+
+Remove objects (destructive):
+
+```sql
+DROP TABLE employees;
+DROP DATABASE testdb;
+```
+
+`DROP` removes the table or database and its data permanently. There is no undo. Do not use it unless we intend to remove that object.
+
+---
+
+## 4. MySQL Users and Permissions
+
+A MySQL account is identified by both a username and a host:
+
+```text
+'username'@'host'
+```
+
+For example, `'testuser'@'localhost'` is not necessarily the same account as `'testuser'@'%'`. These are two separate entries in the grant tables.
+
+- `localhost`: account intended for local connections.
+- `%`: wildcard host matching many remote host names/IPs. It does not bypass network or firewall restrictions, it only controls which connections MySQL will authenticate.
+
+Create a lab user:
+
+```sql
+CREATE USER 'testuser'@'localhost'
+IDENTIFIED BY 'use-a-strong-password';
+```
+
+Grant access to one database:
+
+```sql
+GRANT ALL PRIVILEGES ON testdb.*
+TO 'testuser'@'localhost';
+```
+
+Show grants:
+
+```sql
+SHOW GRANTS FOR 'testuser'@'localhost';
+```
+
+Our lab output was similar to:
+
+```sql
+GRANT USAGE ON *.* TO `testuser`@`localhost`
+GRANT ALL PRIVILEGES ON `testdb`.* TO `testuser`@`localhost`
+```
+
+Meaning:
+
+| Expression | Meaning |
+| --- | --- |
+| `USAGE` | Account exists; this grant itself gives no privileges |
+| `*.*` | Global scope: all databases and tables |
+| `testdb.*` | All tables in the `testdb` database |
+| `ALL PRIVILEGES` | All privileges available at that scope |
+
+The `USAGE` line does not cancel the database-level grant. The second line gives privileges on `testdb`. The `USAGE` entry is simply how MySQL represents "the account exists but has no global privileges."
+
+List accounts:
+
+```sql
+SELECT User, Host FROM mysql.user;
+```
+
+Find one account:
+
+```sql
+SELECT User, Host
+FROM mysql.user
+WHERE User = 'testuser';
+```
+
+Revoke the database grant:
+
+```sql
+REVOKE ALL PRIVILEGES ON testdb.*
+FROM 'testuser'@'localhost';
+```
+
+Remove the account:
+
+```sql
+DROP USER 'testuser'@'localhost';
+```
+
+Dropping a user does not drop the database. Password `123` used in an earlier lab example is weak and should never be used on a real server.
+
+---
+
+## 5. Locating MySQL's Data Directory
+
+Inside MySQL:
+
+```sql
+SHOW VARIABLES LIKE 'datadir';
+```
+
+Our server's observed data directory was:
+
+```text
+/var/lib/mysql_data
+```
+
+Other useful settings:
+
+```sql
+SHOW VARIABLES LIKE 'log_error';
+SHOW VARIABLES LIKE 'general_log%';
+SHOW VARIABLES LIKE 'slow_query_log%';
+SHOW VARIABLES LIKE 'log_output';
+SHOW VARIABLES LIKE 'log_bin%';
+```
+
+These tell us where logs are written and whether logging is enabled, we should check these before searching for a log file.
+
+### Files and directories observed in our data directory
+
+```text
+/var/lib/mysql_data/
+├── mysql/                  MySQL system schema directory
+├── performance_schema/     Performance monitoring schema
+├── sys/                    Diagnostic and performance schema
+├── testdb/                 Our test database directory
+├── mysql.ibd               InnoDB tablespace for MySQL system data
+├── ibdata1                 InnoDB system tablespace
+├── undo_001, undo_002      InnoDB undo tablespaces
+├── #innodb_redo/           InnoDB redo log files/directory
+├── #innodb_temp/           InnoDB temporary tablespace
+├── binlog.000001 etc.      Binary log files
+├── binlog.index            List/index of binary log files
+├── auto.cnf                MySQL server identity information
+└── *.pem                   TLS certificates and/or private keys
+```
+
+This is a simplified guide to files we observed. Exact files vary by MySQL version and configuration.
+
+### Important schemas
+
+| Schema | Purpose |
+| --- | --- |
+| `mysql` | Internal system tables, account and privilege data, and server metadata |
+| `information_schema` | Metadata about databases, tables, columns, and objects (read-only views) |
+| `performance_schema` | Runtime performance instrumentation and measurements |
+| `sys` | Easier-to-read diagnostic and performance views built on top of `performance_schema` |
+
+---
+
+## 6. Understanding the Table's `.ibd` File
+
+We created `testdb.employees` and found:
+
+```text
+/var/lib/mysql_data/testdb/employees.ibd
+```
+
+An `.ibd` file is an InnoDB tablespace file. With file-per-table storage (the default in MySQL 8.0), it contains that table's data and indexes.
+
+We saw a size of about `112K`. This includes InnoDB pages (typically 16K each), indexes, and storage overhead. It is not simply the size of the text in the rows: InnoDB allocates space in pages, not bytes.
+
+An `.ibd` file is binary, not a normal text file. `cat` and ordinary `grep` cannot reliably display its records. Do not edit or delete it manually while the server is running, this can corrupt the tablespace.
+
+---
+
+## 7. Where MySQL Account Information Is Stored
+
+In MySQL 8.0, `mysql.user` is a view for displaying account information. The underlying account data is stored in the `mysql.global_priv` system table. This design separates the visible schema from the internal storage format.
+
+In our setup, this file existed:
+
+```text
+/var/lib/mysql_data/mysql.ibd
+```
+
+We inspected `/var/lib/mysql_data/mysql/` and saw:
+
+```text
+general_log.CSM
+general_log.CSV
+general_log_213.sdi
+slow_log.CSM
+slow_log.CSV
+slow_log_214.sdi
+```
+
+Those files are related to log tables. They are not a list of MySQL users. The system tablespace is not necessarily represented by a file named `user.ibd`.
+
+### Our filesystem experiment with `strings`
+
+We installed the utility on AlmaLinux:
+
+```bash
+dnf install -y binutils
+```
+
+Then searched the tablespace:
+
+```bash
+strings /var/lib/mysql_data/mysql.ibd | grep -i testuser
+```
+
+We found readable fragments including `testuser`, `localhost`, `testdb`, and `Definer: testuser@localhost`.
+
+What the command does:
+
+- `strings`: extracts printable text fragments from a binary file.
+- `|`: passes the first command's output to the next command (a pipe).
+- `grep -i testuser`: finds lines containing `testuser`, ignoring letter case.
+
+**Important:** This is an experiment, not a reliable way to list accounts. InnoDB stores data in binary pages. `strings` does not decode full records or prove which table each fragment belongs to. No match does not mean the account is absent.
+
+Use SQL for authoritative account information:
+
+```sql
+SELECT User, Host
+FROM mysql.user
+WHERE User = 'testuser';
+```
+
+We can also inspect the underlying table:
+
+```sql
+SELECT User, Host
+FROM mysql.global_priv
+WHERE User = 'testuser';
+```
+
+---
+
+## 8. MySQL Logs: Purpose and Behavior
+
+Logs help administrators troubleshoot errors, investigate slow queries, understand connections, and support replication or recovery. Not all logs are enabled by default, we should always check the relevant variables before assuming a log exists.
+
+### A. Error Log
+
+**Purpose:** Records server errors, warnings, startup/shutdown messages, and certain operational problems.
+
+Useful when MySQL will not start or reports storage/configuration problems.
+
+Find the configured path:
+
+```sql
+SHOW VARIABLES LIKE 'log_error';
+```
+
+On AlmaLinux, service messages can also be inspected with:
+
+```bash
+journalctl -u mysqld
+journalctl -u mysqld -n 50
+journalctl -u mysqld -f
+```
+
+- `-n 50` shows the latest 50 lines.
+- `-f` follows new messages as they are written.
+
+### B. General Query Log
+
+**Purpose:** Records client connections and SQL statements received by the server.
+
+It helps answer: who connected, and what SQL statements were sent?
+
+Check settings:
+
+```sql
+SHOW VARIABLES LIKE 'general_log';
+SHOW VARIABLES LIKE 'general_log_file';
+SHOW VARIABLES LIKE 'log_output';
+```
+
+The general log can grow quickly and add overhead. It is usually enabled temporarily for troubleshooting, rather than left on continuously on busy production servers.
+
+### C. Slow Query Log
+
+**Purpose:** Records SQL statements that take longer than a configured time threshold. It helps identify queries that may need optimization.
+
+Check settings:
+
+```sql
+SHOW VARIABLES LIKE 'slow_query_log';
+SHOW VARIABLES LIKE 'slow_query_log_file';
+SHOW VARIABLES LIKE 'long_query_time';
+SHOW VARIABLES LIKE 'log_queries_not_using_indexes';
+SHOW VARIABLES LIKE 'log_output';
+```
+
+Important settings:
+
+| Setting | Meaning |
+| --- | --- |
+| `slow_query_log` | Enables/disables the slow query log |
+| `slow_query_log_file` | File path used for the slow log |
+| `long_query_time` | Time threshold, in seconds |
+| `log_queries_not_using_indexes` | Can log queries that do not use indexes |
+| `log_output` | Destination: `FILE`, `TABLE`, or both |
+
+Example: set a 2-second threshold and enable the slow log at runtime:
+
+```sql
+SET GLOBAL long_query_time = 2;
+SET GLOBAL slow_query_log = ON;
+```
+
+These runtime settings may not persist after a restart unless configured in the MySQL configuration file. We need suitable privileges to change global settings.
+
+A slow query can consume CPU, memory, disk I/O, and database connections. The slow log helps identify queries worth investigating.
+
+### D. Binary Log (binlog)
+
+**Purpose:** Records database changes in a format used for replication and point-in-time recovery.
+
+Common uses:
+
+- Replication between MySQL servers.
+- Recovering data to a particular point in time when used with a suitable backup.
+- Tracking database changes.
+
+We saw files like:
+
+```text
+binlog.000001
+binlog.000002
+binlog.000003
+binlog.index
+```
+
+Check binary logging:
+
+```sql
+SHOW VARIABLES LIKE 'log_bin';
+SHOW VARIABLES LIKE 'log_bin_basename';
+SHOW BINARY LOGS;
+```
+
+Inspect a binary log from Linux:
+
+```bash
+mysqlbinlog /var/lib/mysql_data/binlog.000001
+```
+
+Use the real file path from our server. Binlogs are not the same as general/slow logs: they are mainly for changes, replication, and recovery, not a record of every `SELECT`.
+
+### E. Relay Log
+
+**Purpose:** Used by a replica in MySQL replication. It stores events received from the source before the replica applies them. We may not see relay logs on a standalone server.
+
+### F. Audit Log
+
+**Purpose:** Records security-related activity, such as connections and selected SQL events, depending on the audit plugin or service.
+
+It can support security investigations and compliance. Availability depends on the MySQL edition, plugins, and deployment.
+
+### Quick comparison
+
+| Log | Main purpose |
+| --- | --- |
+| Error log | Errors, warnings, startup/shutdown |
+| General query log | Connections and SQL statements received |
+| Slow query log | Queries taking longer than a threshold |
+| Binary log | Database changes for replication/recovery |
+| Relay log | Events received by a replica |
+| Audit log | Security and audit events |
+
+---
+
+## 9. Why the CSV Log Files Were Empty
+
+We saw:
+
+```text
+general_log.CSV    0 bytes
+slow_log.CSV       0 bytes
+```
+
+`0 bytes` means the files contained no data at the time we checked.
+
+These are log-table files, not the files where our `employees` table records are stored. Our employee table was in:
+
+```text
+/var/lib/mysql_data/testdb/employees.ibd
+```
+
+The general/slow logs may have been disabled, may have been writing to a file instead of a table, or may not have recorded events.
+
+Check:
+
+```sql
+SHOW VARIABLES LIKE 'general_log';
+SHOW VARIABLES LIKE 'slow_query_log';
+SHOW VARIABLES LIKE 'log_output';
+SHOW VARIABLES LIKE 'general_log_file';
+SHOW VARIABLES LIKE 'slow_query_log_file';
+```
+
+`log_output` controls whether general and slow logs write to `FILE`, `TABLE`, or both. `general_log` and `slow_query_log` control whether those logs are enabled.
+
+---
+
+## 10. The `sys` Schema and `sys_config`
+
+We found this file:
+
+```text
+/var/lib/mysql_data/sys/sys_config.ibd
+```
+
+The `sys` schema provides diagnostic and performance views that make Performance Schema information easier to understand. It is essentially a set of convenience views and helper routines, not a separate storage engine.
+
+We ran:
+
+```sql
+SELECT * FROM sys.sys_config;
+```
+
+The output included settings such as:
+
+| Setting | General meaning |
+| --- | --- |
+| `diagnostics.allow_i_s_tables` | Controls use of Information Schema tables by certain diagnostics |
+| `diagnostics.include_raw` | Controls whether raw diagnostic information is included |
+| `ps_thread_trx_info.max_length` | Maximum length for thread transaction information |
+| `statement_performance_analyzer.limit` | Limit used by the statement performance analyzer |
+| `statement_performance_analyzer.view` | View selection/configuration for the analyzer |
+| `statement_truncate_len` | Length used when statement text is truncated in certain sys views |
+
+These are configuration values for sys helper routines and views. They are not MySQL user records.
+
+A useful view to explore:
+
+```sql
+SELECT *
+FROM sys.statement_analysis
+LIMIT 10;
+```
+
+It provides aggregated statement performance information. Results depend on server activity and Performance Schema settings.
+
+---
+
+## 11. Useful Linux Commands for MySQL Administrators
+
+Run these in the Linux terminal, not at the `mysql>` prompt.
+
+### Service status and control
+
+```bash
+systemctl status mysqld
+systemctl start mysqld
+systemctl stop mysqld
+systemctl restart mysqld
+systemctl enable mysqld
+```
+
+- `status`: checks whether the service is running and shows recent log lines.
+- `start` / `stop`: starts or stops MySQL.
+- `restart`: restarts MySQL. Be careful if applications are using it.
+- `enable`: configures the service to start at boot.
+
+### Process, disk, and files
+
+```bash
+ps -ef | grep '[m]ysqld'
+du -sh /var/lib/mysql_data
+ls -lah /var/lib/mysql_data
+find /var/lib/mysql_data -name '*.ibd'
+find /var/lib/mysql_data -maxdepth 1 -type f -ls
+```
+
+- `ps`: displays running processes. The `[m]ysqld` pattern avoids matching the `grep` command itself.
+- `du -sh`: displays total directory size in a readable format.
+- `ls -lah`: lists files, including hidden files, with readable sizes.
+- `find`: searches for files by name or type.
+
+### Read text logs
+
+```bash
+less /path/to/mysql-error.log
+tail -f /path/to/mysql-error.log
+```
+
+Replace the example path with the actual log path. `tail -f` follows new log lines as they are written, useful during troubleshooting.
+
+### Check file ownership
+
+```bash
+ls -l /var/lib/mysql_data
+```
+
+MySQL data files are normally owned by the Linux `mysql` user and group. Do not change ownership or permissions casually, the server may refuse to start or may expose data incorrectly.
+
+---
+
+## 12. MySQL File Types: Quick Reference
+
+| File/directory | General purpose |
+| --- | --- |
+| `.ibd` | InnoDB tablespace; may contain table data and indexes |
+| `ibdata1` | InnoDB system tablespace |
+| `undo_*` | Undo data used for rollback and multi-version concurrency control |
+| `#innodb_redo` | InnoDB redo log files |
+| `#innodb_temp` | InnoDB temporary tablespace |
+| `binlog.*` | Binary log files |
+| `binlog.index` | List/index of binary log files |
+| `.CSV` | Data file for a CSV table |
+| `.CSM` | CSV storage-engine metadata |
+| `.sdi` | Serialized dictionary information (table metadata) |
+| `.pem` | Certificate or key file, depending on its name and role |
+| `auto.cnf` | MySQL server identity/configuration information |
+
+Do not manually edit, delete, or move MySQL data files while the server is running. This can corrupt data or prevent MySQL from starting.
+
+---
+
+## 13. Safety Rules to Remember
+
+1. Use SQL to manage databases, tables, and users. Do not edit `.ibd` files manually.
+2. Linux accounts and MySQL accounts are separate authentication systems.
+3. Check `datadir` before searching for database files.
+4. Check log settings before assuming a log is enabled or stored in a particular location.
+5. Do not delete binary logs casually. They may be needed for replication or point-in-time recovery.
+6. Never share private keys such as `server-key.pem`, `client-key.pem`, or `ca-key.pem`.
+7. Use strong passwords. Do not use simple lab passwords on real servers.
+8. Back up before making important changes, and test that backups can be restored.
+9. Be careful with destructive SQL such as `DROP`, `DELETE`, and `UPDATE`.
+10. Treat `strings` as a learning experiment, not as a supported way to inspect MySQL records.
+
+---
+
+## 14. Practice Exercise
+
+Try this in our lab.
+
+### Step 1: Connect
+
+```bash
+mysql -u root -p
+```
+
+### Step 2: Create and select a practice database
+
+```sql
+CREATE DATABASE practice_db;
+USE practice_db;
+```
+
+### Step 3: Create a table
+
+```sql
+CREATE TABLE servers (
+    id INT PRIMARY KEY,
+    hostname VARCHAR(100),
+    operating_system VARCHAR(100)
+);
+```
+
+### Step 4: Insert two records
+
+```sql
+INSERT INTO servers (id, hostname, operating_system)
+VALUES
+(1, 'db-master', 'AlmaLinux'),
+(2, 'db-replica', 'AlmaLinux');
+```
+
+### Step 5: Read and inspect
+
+```sql
+SELECT * FROM servers;
+DESCRIBE servers;
+```
+
+### Step 6: Find the table file
+
+Exit MySQL:
+
+```sql
+EXIT;
+```
+
+Then run in Linux:
+
+```bash
+find /var/lib/mysql_data/practice_db -maxdepth 1 -type f -ls
+```
+
+If the table uses InnoDB file-per-table storage, we should see a file such as `servers.ibd`.
+
+---
+
+## 15. Quick Command Cheat Sheet
+
+### SQL (inside the MySQL client)
+
+```sql
+SHOW DATABASES;
+CREATE DATABASE database_name;
+USE database_name;
+SHOW TABLES;
+DESCRIBE table_name;
+SELECT * FROM table_name;
+SHOW GRANTS FOR 'username'@'host';
+SELECT User, Host FROM mysql.user;
+SHOW VARIABLES LIKE 'datadir';
+SHOW VARIABLES LIKE 'slow_query_log%';
+SHOW VARIABLES LIKE 'general_log%';
+SHOW BINARY LOGS;
+EXIT;
+```
+
+### Linux (in the terminal)
+
+```bash
+mysql -u root -p
+systemctl status mysqld
+systemctl start mysqld
+systemctl stop mysqld
+systemctl restart mysqld
+journalctl -u mysqld -n 50
+ls -lah /var/lib/mysql_data
+du -sh /var/lib/mysql_data
+find /var/lib/mysql_data -name '*.ibd'
+strings /var/lib/mysql_data/mysql.ibd | grep -i testuser
+```
+
+**Remember:** SQL commands run inside the MySQL client. Linux commands run in the Linux shell. MySQL data files are managed by the MySQL server and should not normally be edited directly.
+
+
