@@ -4,51 +4,15 @@ Complete setup for serving a PHP application with Nginx and PHP-FPM on a fresh A
 
 ---
 
-## 1. Before / After
+## 1. Key Concepts (read this first)
 
-### Before
-
-| Item | State |
-|---|---|
-| Web server | Not installed |
-| PHP runtime | Not installed |
-| Port 80 | Closed in firewalld |
-| SELinux | Blocking Nginx to PHP-FPM connections by default |
-| Browser access | Nothing listening |
-
-### After
-
-| Item | State |
-|---|---|
-| Web server | Nginx running, serving static files and proxying PHP |
-| PHP runtime | PHP-FPM running as `apache`, listening on a unix socket |
-| Port 80 | Open |
-| SELinux | Allowed to connect Nginx to the PHP-FPM socket |
-| Browser access | Shows the PHP app at `http://<vm-ip>/` |
-
-Request flow after setup:
+### Architecture
 
 ```
 Browser  ->  Nginx (port 80)  ->  PHP-FPM (unix socket)  ->  index.php
 ```
 
 Nginx serves static files (CSS, images) directly. It forwards `.php` requests to PHP-FPM over the socket at `/run/php-fpm/www.sock`.
-
-### File layout after
-
-```
-/usr/share/nginx/html/
-├── index.php
-└── style.css
-
-/etc/nginx/conf.d/php-app.conf     <-- your site config
-/etc/nginx/nginx.conf              <-- default server block removed
-/etc/php-fpm.d/www.conf            <-- listen = /run/php-fpm/www.sock
-```
-
----
-
-## 2. Key Concepts (read this first)
 
 ### The pieces
 
@@ -92,18 +56,18 @@ Each step feeds the next. Skip the SELinux or firewall step and the browser will
 
 ---
 
-## 3. Warnings
+## 2. Warnings
 
 - **SELinux blocks the PHP socket by default.** Without `setsebool`, you get `502 Bad Gateway`.
 - **firewalld blocks port 80 by default.** Without opening it, browsers cannot connect.
 - **AlmaLinux `nginx.conf` ships a default `server { ... }` block** that conflicts with yours. Remove it, or Nginx fails with `duplicate default server`.
 - **Files must be owned by `apache:apache`**, or Nginx returns `403 Forbidden`.
 - **Always run `nginx -t`** after editing configs and before reloading.
-- **Do not edit files as the wrong user.** Use `sudo` for system paths and keep app files owned by `apache`.
+- **One `default_server` per port.** More than one causes a warning. None causes unpredictable behavior.
 
 ---
 
-## 4. Step-by-Step
+## 3. Step-by-Step
 
 ### Step 0: Inspect the current state
 
@@ -455,22 +419,7 @@ Content-Type: text/html; charset=UTF-8
 
 Open `http://<vm-ip>/` in a browser. You should see the purple card with the app details.
 
-### Step 9: Verify and troubleshoot
-
-If something fails, check logs:
-
-```bash
-sudo tail -20 /var/log/nginx/error.log
-sudo tail -20 /var/log/php-fpm/www-error.log
-sudo ausearch -m avc -ts recent
-```
-
-- `tail -20 file` shows the last 20 lines of a file.
-- `ausearch -m avc` shows SELinux denials.
-
-See Section 6 for the common error table.
-
-### Step 10: Daily usage
+### Step 9: Daily usage
 
 Once the server is running, adding or editing PHP files is instant. Nginx serves them immediately, no restart needed.
 
@@ -492,7 +441,7 @@ sudo systemctl reload nginx
 
 ---
 
-## 5. Command Cheat Sheet
+## 4. Command Cheat Sheet
 
 ### Files and permissions
 
@@ -519,6 +468,7 @@ sudo systemctl reload nginx
 |---|---|
 | `nginx -t` | Check config syntax |
 | `nginx -v` | Show version |
+| `nginx -T` | Dump the full merged config |
 
 ### Logs
 
@@ -553,7 +503,20 @@ sudo systemctl reload nginx
 
 ---
 
-## 6. Troubleshooting
+## 5. Troubleshooting
+
+If something fails, check logs first:
+
+```bash
+sudo tail -20 /var/log/nginx/error.log
+sudo tail -20 /var/log/php-fpm/www-error.log
+sudo ausearch -m avc -ts recent
+```
+
+- `tail -20 file` shows the last 20 lines of a file.
+- `ausearch -m avc` shows SELinux denials.
+
+### Common errors
 
 | Error | Cause | Fix |
 |---|---|---|
@@ -566,9 +529,150 @@ sudo systemctl reload nginx
 | Connection refused | Port 80 closed | `sudo firewall-cmd --permanent --add-service=http && sudo firewall-cmd --reload` |
 | SELinux denial in `ausearch` | Socket connection blocked | `sudo setsebool -P httpd_can_network_connect 1` |
 
+### Port conflict: welcome page instead of the PHP app
+
+**Symptom:** `http://<vm-ip>/` shows the Nginx welcome page instead of the PHP app. Port 8080 shows the PHP app. `nginx -t` prints:
+
+```
+conflicting server name "_" on 0.0.0.0:80, ignored
+```
+
+**Cause:** two server blocks claim port 80.
+
+1. An inline `server { ... }` block inside `/etc/nginx/nginx.conf` serving the welcome page.
+2. The `php-app.conf` block for the app.
+
+Nginx keeps one default per port and ignores the rest. The welcome page loaded first, so it answered every request on port 80. The PHP app block was silently skipped.
+
+A second problem made it worse: `default.conf` had `listen 8080;` and `php-app.conf` had `listen 80;`, and neither used `default_server`, so Nginx had no rule to break the tie.
+
+**Diagnose:**
+
+```bash
+# Which files claim which port?
+sudo grep -rn -E "listen (80|8080)" /etc/nginx/
+
+# Any server blocks left in the main config?
+grep -n "server {" /etc/nginx/nginx.conf
+
+# Dump the merged config with file markers
+sudo nginx -T | grep -nE "^# configuration file|listen|server_name|root"
+
+# Which files declare a default server?
+sudo grep -rn "default_server" /etc/nginx/
+```
+
+`nginx -T` prints the fully merged config with a `# configuration file /path` marker before each file. That shows which file owns each `listen` and `server_name`.
+
+**Fix:**
+
+1. Remove the stale `server { ... }` block from `/etc/nginx/nginx.conf` (same steps as Step 6).
+
+2. Make the PHP app the default on port 80. Edit `/etc/nginx/conf.d/php-app.conf`:
+
+```nginx
+server {
+    listen 80 default_server;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.php index.html;
+
+    location / {
+        try_files $uri $uri/ /index.php;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_pass unix:/run/php-fpm/www.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+}
+```
+
+3. Move the welcome page to port 8080. Edit `/etc/nginx/conf.d/default.conf`:
+
+```nginx
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+```
+
+4. Apply and verify:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+sudo systemctl restart php-fpm
+curl -I http://localhost/
+curl -I http://localhost:8080/
+```
+
+Expected: `nginx -t` prints no warnings, `http://<vm-ip>/` serves the PHP app, `http://<vm-ip>:8080/` serves the welcome page.
+
+### One-shot reset to a clean state
+
+If the config becomes unclear, rewrite both files and reload:
+
+```bash
+sudo tee /etc/nginx/conf.d/php-app.conf > /dev/null <<'EOF'
+server {
+    listen 80 default_server;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.php index.html;
+
+    location / {
+        try_files $uri $uri/ /index.php;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_pass unix:/run/php-fpm/www.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+}
+EOF
+
+sudo tee /etc/nginx/conf.d/default.conf > /dev/null <<'EOF'
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+EOF
+
+sudo nginx -t
+sudo systemctl reload nginx
+sudo systemctl restart php-fpm
+```
+
+### Rules to remember
+
+- **One `default_server` per port.** More than one causes the warning. None causes unpredictable behavior.
+- **Do not put server blocks in `nginx.conf`.** Keep `nginx.conf` for global settings only. Every site lives in `/etc/nginx/conf.d/<name>.conf`.
+- **Every block needs a unique `server_name` or port.** Two blocks with `server_name _;` on the same port will fight.
+- **`listen 80;` without `default_server` is not the same as `listen 80 default_server;`.** The first competes, the second wins ties.
+- **Always run `nginx -t` before reloading.** Syntax errors prevent Nginx from reloading and leave the old config running.
+
 ---
 
-## 7. Full recreation sequence
+## 6. Full recreation sequence
 
 Copy this block to rebuild from scratch on a new AlmaLinux VM:
 
@@ -609,7 +713,7 @@ If `nginx -t` prints `syntax is ok` and `curl` returns `200 OK`, the setup is co
 
 ---
 
-## 8. Next step: migration to Docker
+## 7. Next step: migration to Docker
 
 Every native step maps to a Dockerfile line. Once the native setup works, the Docker version becomes obvious.
 
@@ -626,15 +730,16 @@ The container bundles both services into one image using Supervisor. That is why
 
 ---
 
-## 9. Quick recap
+## 8. Quick recap
 
 1. Installed Nginx, PHP, and PHP-FPM with `dnf`.
 2. Created `index.php` and `style.css` in `~/php-app/src`.
 3. Copied them to `/usr/share/nginx/html` and set owner to `apache:apache`.
 4. Confirmed PHP-FPM listens on `/run/php-fpm/www.sock` as `apache`.
-5. Added a site config in `/etc/nginx/conf.d/php-app.conf`.
+5. Added a site config in `/etc/nginx/conf.d/php-app.conf` with `listen 80 default_server`.
 6. Removed the default `server { ... }` block from `nginx.conf`.
 7. Opened SELinux (`httpd_can_network_connect`) and the firewall (port 80).
 8. Started both services and verified with `nginx -t` and `curl -I`.
 9. Browser shows the app. Editing files needs no restart.
-10. The Docker migration is a direct mapping of the same steps into a Dockerfile.
+10. If the welcome page shows on port 80, see the port conflict section in Troubleshooting.
+11. The Docker migration is a direct mapping of the same steps into a Dockerfile.
