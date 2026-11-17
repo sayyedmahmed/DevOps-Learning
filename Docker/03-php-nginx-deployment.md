@@ -132,7 +132,7 @@ $host = gethostname();
 <body>
     <div class="card">
         <div class="emoji">🐘</div>
-        <h1>Hello, PHP!</h1>
+        <h1>Hello, Ahmed!</h1>
         <p class="lead">Running natively on AlmaLinux with Nginx and PHP-FPM.</p>
 
         <div class="info">
